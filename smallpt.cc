@@ -50,13 +50,18 @@ double clamp(double x) {
   return x<0 ? 0 : x>1 ? 1 : x;
 }
 
+double linear_to_srgb(double x) {
+  if (x < 0.0031308)
+    x *= 12.92;
+  else
+    x = 1.055 * pow(x, 1.0 / 2.4) - 0.055;
+  return x;
+}
+
 void vec_to_rgb(const Vec &input, int &r, int &g, int &b) {
-  /*  3.2404542 -1.5371385 -0.4985314
-     -0.9692660  1.8760108  0.0415560
-      0.0556434 -0.2040259  1.0572252 */
-  r = pow(clamp(input.x), 1.0 / 2.2) * 255 + 0.5;
-  g = pow(clamp(input.y), 1.0 / 2.2) * 255 + 0.5;
-  b = pow(clamp(input.z), 1.0 / 2.2) * 255 + 0.5;
+  r = linear_to_srgb(input.x) * 255.0 + 0.5;
+  g = linear_to_srgb(input.y) * 255.0 + 0.5;
+  b = linear_to_srgb(input.z) * 255.0 + 0.5;
 }
 
 bool intersect(const Ray &r, double &t, int &id) {
