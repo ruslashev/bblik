@@ -1,18 +1,9 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
+#include <glm/glm.hpp>
 
-struct vec3_t {
-  double x, y, z;
-  vec3_t(double x_ = 0, double y_ = 0, double z_ = 0){ x = x_; y = y_; z = z_; }
-  vec3_t operator+(const vec3_t &b) const { return vec3_t(x + b.x, y + b.y, z + b.z); }
-  vec3_t operator-(const vec3_t &b) const { return vec3_t(x - b.x, y - b.y, z - b.z); }
-  vec3_t operator*(double b) const { return vec3_t(x * b, y * b, z * b); }
-  vec3_t mult(const vec3_t &b) const { return vec3_t(x * b.x, y * b.y, z * b.z); }
-  vec3_t& norm(){ return *this =  *this * (1/sqrt(x * x + y * y + z * z)); }
-  double dot(const vec3_t &b) const { return x * b.x + y * b.y + z * b.z; } // cross:
-  vec3_t operator%(vec3_t&b){return vec3_t(y * b.z - z * b.y, z * b.x - x * b.z, x * b.y - y * b.x);}
-};
+typedef glm::tvec3<double> vec3_t;
 
 struct ray_t { vec3_t o, d; ray_t(vec3_t o_, vec3_t d_) : o(o_), d(d_) {} };
 
@@ -26,7 +17,7 @@ struct sphere_t {
     rad(rad_), p(p_), e(e_), c(c_), refl(refl_) {}
   double intersect(const ray_t &r) const { // returns distance, 0 if nohit
     vec3_t op = p - r.o; // Solve t^2*d.d + 2*t*(o-p).d + (o-p).(o-p)-R^2 = 0
-    double t, eps = 1e-4, b = op.dot(r.d), det = b * b - op.dot(op) + rad * rad;
+    double t, eps = 1e-4, b = glm::dot(op, r.d), det = b * b - glm::dot(op, op) + rad * rad;
     if (det<0) return 0; else det = sqrt(det);
     return (t = b - det)>eps ? t : ((t = b + det)>eps ? t : 0);
   }
@@ -80,33 +71,33 @@ vec3_t radiance(const ray_t &r, int depth, unsigned short *Xi) {
   int id = 0;                               // id of intersected object
   if (!intersect(r, t, id)) return vec3_t(); // if miss, return black
   const sphere_t &obj = spheres[id];        // the hit object
-  vec3_t x = r.o + r.d * t, n = (x - obj.p).norm(), nl = n.dot(r.d)<0?n:n * -1, f = obj.c;
+  vec3_t x = r.o + r.d * t, n = glm::normalize(x - obj.p), nl = glm::dot(n, r.d)<0?n: -n, f = obj.c;
   double p = f.x>f.y && f.x>f.z ? f.x : f.y>f.z ? f.y : f.z; // max refl
   if (++depth>5) if (erand48(Xi)<p) f = f * (1/p); else return obj.e; //R.R.
   if (obj.refl == DIFF){                  // Ideal DIFFUSE reflection
     double r1 = 2 * M_PI * erand48(Xi), r2 = erand48(Xi), r2s = sqrt(r2);
-    vec3_t w = nl, u = ((fabs(w.x)>.1?vec3_t(0, 1):vec3_t(1))%w).norm(), v = w%u;
-    vec3_t d = (u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrt(1 - r2)).norm();
-    return obj.e + f.mult(radiance(ray_t(x, d), depth, Xi));
+    vec3_t w = nl, u = glm::normalize(glm::cross(fabs(w.x)>.1?vec3_t(0, 1, 0):vec3_t(1, 0, 0),w)), v = glm::cross(w,u);
+    vec3_t d = glm::normalize(u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrt(1 - r2));
+    return obj.e + f * radiance(ray_t(x, d), depth, Xi);
   } else if (obj.refl == SPEC)            // Ideal SPECULAR reflection
-    return obj.e + f.mult(radiance(ray_t(x, r.d - n * 2 * n.dot(r.d)), depth, Xi));
-  ray_t reflRay(x, r.d - n * 2 * n.dot(r.d));     // Ideal dielectric REFRACTION
-  bool into = n.dot(nl)>0;                // ray_t from outside going in?
-  double nc = 1, nt = 1.5, nnt = into?nc/nt:nt/nc, ddn = r.d.dot(nl), cos2t;
+    return obj.e + f * radiance(ray_t(x, r.d - n * 2. * glm::dot(n, r.d)), depth, Xi);
+  ray_t reflRay(x, r.d - n * 2. * glm::dot(n, r.d));     // Ideal dielectric REFRACTION
+  bool into = glm::dot(n, nl)>0;                // ray_t from outside going in?
+  double nc = 1, nt = 1.5, nnt = into?nc/nt:nt/nc, ddn = glm::dot(r.d, nl), cos2t;
   if ((cos2t = 1 - nnt * nnt * (1 - ddn * ddn))<0)    // Total internal reflection
-    return obj.e + f.mult(radiance(reflRay, depth, Xi));
-  vec3_t tdir = (r.d * nnt  -  n * ((into?1: -1) * (ddn * nnt + sqrt(cos2t)))).norm();
-  double a = nt - nc, b = nt + nc, R0 = a * a/(b * b), c = 1 - (into? - ddn:tdir.dot(n));
+    return obj.e + f * radiance(reflRay, depth, Xi);
+  vec3_t tdir = glm::normalize(r.d * nnt  -  n * ((into?1: -1) * (ddn * nnt + sqrt(cos2t))));
+  double a = nt - nc, b = nt + nc, R0 = a * a/(b * b), c = 1 - (into? - ddn:glm::dot(tdir, n));
   double Re = R0 + (1 - R0) * c * c * c * c * c, Tr = 1 - Re, P = .25 + .5 * Re, RP = Re/P, TP = Tr/(1 - P);
-  return obj.e + f.mult(depth>2 ? (erand48(Xi)<P ?   // Russian roulette
+  return obj.e + f * (depth>2 ? (erand48(Xi)<P ?   // Russian roulette
     radiance(reflRay, depth, Xi) * RP:radiance(ray_t(x, tdir), depth, Xi) * TP) :
     radiance(reflRay, depth, Xi) * Re + radiance(ray_t(x, tdir), depth, Xi) * Tr);
 }
 
 int main(int argc, char *argv[]) {
   int w = 1024, h = 768, samps = argc == 2 ? atoi(argv[1])/4 : 1; // # samples
-  ray_t cam(vec3_t(50, 52, 295.6), vec3_t(0, -0.042612, -1).norm()); // cam pos, dir
-  vec3_t cx = vec3_t(w * .5135/h), cy = (cx%cam.d).norm() * .5135, r, *c = new vec3_t[w * h];
+  ray_t cam(vec3_t(50, 52, 295.6), glm::normalize(vec3_t(0, -0.042612, -1))); // cam pos, dir
+  vec3_t cx = vec3_t(w * .5135/h, 0, 0), cy = glm::normalize(glm::cross(cx,cam.d)) * .5135, r, *c = new vec3_t[w * h];
 #pragma omp parallel for schedule(dynamic, 1) private(r)       // OpenMP
   for (int y = 0; y<h; y++){                       // Loop over image rows
     fprintf(stderr,"\rRendering (%d spp) %5.2f%%", samps * 4, 100. * y/(h - 1));
@@ -118,7 +109,7 @@ int main(int argc, char *argv[]) {
             double r2 = 2 * erand48(Xi), dy = r2<1 ? sqrt(r2) - 1: 1 - sqrt(2 - r2);
             vec3_t d = cx * ( ( (sx + .5 + dx)/2 + x)/w - .5) +
                     cy * ( ( (sy + .5 + dy)/2 + y)/h - .5) + cam.d;
-            r = r + radiance(ray_t(cam.o + d * 140, d.norm()), 0, Xi) * (1./samps);
+            r = r + radiance(ray_t(cam.o + d * 140., glm::normalize(d)), 0, Xi) * (1./samps);
           } // Camera rays are pushed ^^^^^ forward to start in interior
           c[i] = c[i] + vec3_t(clamp(r.x), clamp(r.y), clamp(r.z)) * .25;
         }
