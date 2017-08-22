@@ -43,17 +43,31 @@ Sphere spheres[] = {//Scene: radius, position, emission, color, material
   Sphere(16.5,Vec(73,16.5,78),       Vec(),Vec(1,1,1)*.999, REFR),//Glas
   Sphere(600, Vec(50,681.6-.27,81.6),Vec(12,12,12),  Vec(), DIFF) //Lite
 };
+const int num_spheres = sizeof(spheres) / sizeof(Sphere);
+const double infinity = 1e20;
 
 double clamp(double x) {
   return x<0 ? 0 : x>1 ? 1 : x;
 }
 
-inline int toInt(double x){ return int(pow(clamp(x),1/2.2)*255+.5); }
+void vec_to_rgb(const Vec &input, int &r, int &g, int &b) {
+  /*  3.2404542 -1.5371385 -0.4985314
+     -0.9692660  1.8760108  0.0415560
+      0.0556434 -0.2040259  1.0572252 */
+  r = pow(clamp(input.x), 1.0 / 2.2) * 255 + 0.5;
+  g = pow(clamp(input.y), 1.0 / 2.2) * 255 + 0.5;
+  b = pow(clamp(input.z), 1.0 / 2.2) * 255 + 0.5;
+}
 
-inline bool intersect(const Ray &r, double &t, int &id) {
-  double n=sizeof(spheres)/sizeof(Sphere), d, inf=t=1e20;
-  for(int i=int(n);i--;) if((d=spheres[i].intersect(r))&&d<t){t=d;id=i;}
-  return t<inf;
+bool intersect(const Ray &r, double &t, int &id) {
+  double d;
+  t = infinity;
+  for (int i=0; i < num_spheres; ++i)
+    if ((d = spheres[i].intersect(r)) && d < t) {
+      t = d;
+      id = i;
+    }
+  return t < infinity;
 }
 
 Vec radiance(const Ray &r, int depth, unsigned short *Xi) {
@@ -106,7 +120,10 @@ int main(int argc, char *argv[]) {
   }
   FILE *f = fopen("image.ppm", "w");         // Write image to PPM file.
   fprintf(f, "P3\n%d %d\n%d\n", w, h, 255);
-  for (int i=0; i<w*h; i++)
-    fprintf(f,"%d %d %d ", toInt(c[i].x), toInt(c[i].y), toInt(c[i].z));
+  for (int i=0; i<w*h; i++) {
+    int r, g, b;
+    vec_to_rgb(c[i], r, g, b);
+    fprintf(f,"%d %d %d ", r, g, b);
+  }
 }
 
