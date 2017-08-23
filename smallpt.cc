@@ -73,7 +73,12 @@ bool intersect(const ray_t &r, double &t, int &id) {
   return t < infinity;
 }
 
-vec3_t radiance(const ray_t &r, int depth, unsigned short *Xi) {
+double randf() {
+  // return (double)rand() / (double)RAND_MAX;
+  return drand48();
+}
+
+vec3_t radiance(const ray_t &r, int depth) {
   double t; // distance to intersection
   int id = 0; // id of intersected object
   if (!intersect(r, t, id))
@@ -87,56 +92,57 @@ vec3_t radiance(const ray_t &r, int depth, unsigned short *Xi) {
 
   // R.R.
   if (++depth > 5)
-    if (erand48(Xi) < p)
-      f = f * (1/p);
+    if (randf() < p)
+      f = f * (1 / p);
     else
       return obj.emission;
 
   if (obj.refl == DIFF) { // Ideal DIFFUSE reflection
-    double r1 = 2 * M_PI * erand48(Xi), r2 = erand48(Xi), r2s = sqrt(r2);
+    double r1 = 2 * M_PI * randf(), r2 = randf(), r2s = sqrt(r2);
     vec3_t w = nl
       , u = glm::normalize(glm::cross(fabs(w.x) > 0.1 ? vec3_t(0, 1, 0) : vec3_t(1, 0, 0), w))
       , v = glm::cross(w,u);
     vec3_t d = glm::normalize(u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrt(1. - r2));
-    return obj.emission + f * radiance(ray_t(x, d), depth, Xi);
+    return obj.emission + f * radiance(ray_t(x, d), depth);
   } else if (obj.refl == SPEC) // Ideal SPECULAR reflection
-    return obj.emission + f * radiance(ray_t(x, r.d - n * 2. * glm::dot(n, r.d)), depth, Xi);
+    return obj.emission + f * radiance(ray_t(x, r.d - n * 2. * glm::dot(n, r.d)), depth);
   else if (obj.refl == REFR) {
     ray_t refl_ray(x, r.d - n * 2. * glm::dot(n, r.d)); // Ideal dielectric REFRACTION
     bool into = glm::dot(n, nl) > 0; // Ray from outside going in?
     double nc = 1, nt = 1.5, nnt = into ? nc / nt : nt / nc, ddn = glm::dot(r.d, nl), cos2t;
     if ((cos2t = 1 - nnt * nnt * (1 - ddn * ddn)) < 0) // Total internal reflection
-      return obj.emission + f * radiance(refl_ray, depth, Xi);
+      return obj.emission + f * radiance(refl_ray, depth);
     vec3_t tdir = glm::normalize(r.d * nnt - n * ((into ? 1 : -1) * (ddn * nnt + sqrt(cos2t))));
     double a = nt - nc, b = nt + nc, R0 = a * a / (b * b), c = 1 - (into ? - ddn : glm::dot(tdir, n));
     double Re = R0 + (1 - R0) * c * c * c * c * c, Tr = 1 - Re, P = 0.25 + 0.5 * Re, RP = Re / P, TP = Tr / (1 - P);
-    return obj.emission + f * (depth > 2 ? (erand48(Xi) < P ? // Russian roulette
-          radiance(refl_ray, depth, Xi) * RP : radiance(ray_t(x, tdir), depth, Xi) * TP) :
-        radiance(refl_ray, depth, Xi) * Re + radiance(ray_t(x, tdir), depth, Xi) * Tr);
+    return obj.emission + f * (depth > 2 ? (randf() < P ? // Russian roulette
+          radiance(refl_ray, depth) * RP : radiance(ray_t(x, tdir), depth) * TP) :
+        radiance(refl_ray, depth) * Re + radiance(ray_t(x, tdir), depth) * Tr);
   }
 }
 
 int main(int argc, char *argv[]) {
-  int w = 1024, h = 768, samples = argc == 2 ? atoi(argv[1])/4 : 1;
+  int w = 1024, h = 768, samples = argc == 2 ? atoi(argv[1]) / 4 : 1;
   ray_t cam(vec3_t(50, 52, 295.6), glm::normalize(vec3_t(0, -0.042612, -1))); // cam pos, dir
-  vec3_t cx = vec3_t(w * 0.5135/h, 0, 0)
+  vec3_t cx = vec3_t(w * 0.5135 / h, 0, 0)
     , cy = glm::normalize(glm::cross(cx,cam.d)) * 0.5135, r, *c = new vec3_t[w * h];
 #pragma omp parallel for schedule(dynamic, 1) private(r) // OpenMP
   for (int y = 0; y < h; y++) { // Loop over image rows
     fprintf(stderr,"\rRendering (%d spp) %5.2f%%", samples * 4, 100. * y / (h - 1));
-    for (unsigned short x = 0, Xi[3] = {0, 0, y * y * y}; x < w; x++)   // Loop cols
+    for (unsigned short x = 0; x < w; x++)   // Loop cols
       for (int sy = 0, i = (h - y - 1) * w + x; sy<2; sy++)     // 2x2 subpixel rows
-        for (int sx = 0; sx<2; sx++, r = vec3_t()){        // 2x2 subpixel cols
+        for (int sx = 0; sx < 2; sx++, r = vec3_t()){        // 2x2 subpixel cols
           for (int s = 0; s<samples; s++){
-            double r1 = 2 * erand48(Xi), dx = r1<1 ? sqrt(r1) - 1: 1 - sqrt(2 - r1);
-            double r2 = 2 * erand48(Xi), dy = r2<1 ? sqrt(r2) - 1: 1 - sqrt(2 - r2);
-            vec3_t d = cx * ( ( (sx + .5 + dx)/2 + x)/w - .5) +
-                    cy * ( ( (sy + .5 + dy)/2 + y)/h - .5) + cam.d;
-            r = r + radiance(ray_t(cam.o + d * 140., glm::normalize(d)), 0, Xi) * (1./samples);
+            double r1 = 2 * randf(), dx = r1 < 1 ? sqrt(r1) - 1 : 1 - sqrt(2 - r1);
+            double r2 = 2 * randf(), dy = r2 < 1 ? sqrt(r2) - 1 : 1 - sqrt(2 - r2);
+            vec3_t d = cx * (((sx + .5 + dx) / 2 + x) / w - .5) +
+                    cy * (((sy + .5 + dy) / 2 + y) / h - .5) + cam.d;
+            r = r + radiance(ray_t(cam.o + d * 140., glm::normalize(d)), 0) * (1. / samples);
           } // Camera rays are pushed ^^^^^ forward to start in interior
           c[i] = c[i] + vec3_t(clamp(r.x), clamp(r.y), clamp(r.z)) * .25;
         }
   }
+  puts("");
   FILE *f = fopen("image.ppm", "w");         // Write image to PPM file.
   fprintf(f, "P3\n%d %d\n%d\n", w, h, 255);
   for (int i = 0; i<w * h; i++) {
