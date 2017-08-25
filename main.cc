@@ -2,6 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include <vector>
+#include <cmath>
 #include <GL/glew.h>
 #include <GL/glx.h>
 #include <CL/cl.hpp>
@@ -211,7 +212,6 @@ void initCLKernel() {
   kernel.setArg(2, window_height);
   kernel.setArg(3, sphere_count);
   kernel.setArg(4, cl_vbo);
-  kernel.setArg(5, framenumber);
 }
 
 void runKernel() {
@@ -240,28 +240,17 @@ void runKernel() {
   queue.finish();
 }
 
-// hash function to calculate new seed for each frame
-// see http://www.reedbeta.com/blog/2013/01/12/quick-and-easy-gpu-random-numbers-in-d3d11/
-unsigned int WangHash(unsigned int a) {
-  a = (a ^ 61) ^ (a >> 16);
-  a = a + (a << 3);
-  a = a ^ (a >> 4);
-  a = a * 0x27d4eb2d;
-  a = a ^ (a >> 15);
-  return a;
-}
-
 void render() {
   const auto time_render_begin = std::chrono::high_resolution_clock::now();
 
   ++framenumber;
 
-  cpu_spheres[6].position.s[1] += 0.01;
+  cpu_spheres[6].position.s[1] = sin((float)framenumber / 11.f) / 10.f;
+  cpu_spheres[6].position.s[0] = -0.25f + cos((float)framenumber / 7.f) / 10.f;
 
   queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, sphere_count * sizeof(Sphere), cpu_spheres);
 
   kernel.setArg(0, cl_spheres);
-  kernel.setArg(5, WangHash(framenumber));
 
   runKernel();
 
