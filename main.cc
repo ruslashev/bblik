@@ -1,5 +1,6 @@
-#include <iostream>
+#include <chrono>
 #include <fstream>
+#include <iostream>
 #include <vector>
 #include <GL/glew.h>
 #include <GL/glx.h>
@@ -20,13 +21,15 @@ void initGL(int argc, char** argv) {
   glutInit(&argc, argv);
   glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
   glutInitWindowSize(window_width, window_height);
-  glutCreateWindow("Basic OpenCL path tracer");
+  glutCreateWindow("bblik");
 
   glutDisplayFunc(render);
 
   glewInit();
 
   glClearColor(0.0, 0.0, 0.0, 1.0);
+
+  // glPushMatrix for normal opengl drawing?
   glMatrixMode(GL_PROJECTION);
   gluOrtho2D(0.0, window_width, 0.0, window_height);
 }
@@ -39,7 +42,7 @@ void createVBO(GLuint* vbo) {
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-void drawGL(){
+void drawGL() {
   glClear(GL_COLOR_BUFFER_BIT);
   glBindBuffer(GL_ARRAY_BUFFER, vbo);
   glVertexPointer(2, GL_FLOAT, 16, 0);
@@ -249,6 +252,8 @@ unsigned int WangHash(unsigned int a) {
 }
 
 void render() {
+  const auto time_render_begin = std::chrono::high_resolution_clock::now();
+
   ++framenumber;
 
   cpu_spheres[6].position.s[1] += 0.01;
@@ -261,6 +266,13 @@ void render() {
   runKernel();
 
   drawGL();
+
+  const auto time_render_end = std::chrono::high_resolution_clock::now();
+  const std::chrono::duration<double, std::milli> render_duration
+    = time_render_end - time_render_begin;
+  const std::string title_string = "bblik " + std::to_string(render_duration.count())
+    + " us/f, " + std::to_string(1. / (render_duration.count() / 1000.f)) + " f/s";
+  glutSetWindowTitle(title_string.c_str());
 }
 
 int main(int argc, char** argv) {
@@ -272,10 +284,10 @@ int main(int argc, char** argv) {
 
   Timer(0);
 
+  initScene(cpu_spheres);
+
   // make sure OpenGL is finished before we proceed
   glFinish();
-
-  initScene(cpu_spheres);
 
   cl_spheres = Buffer(context, CL_MEM_READ_ONLY, sphere_count * sizeof(Sphere));
   queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, sphere_count * sizeof(Sphere), cpu_spheres);
