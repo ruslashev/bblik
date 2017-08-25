@@ -1,39 +1,125 @@
-// OpenCL based simple sphere path tracer by Sam Lapere, 2016
-// based on smallpt by Kevin Beason 
-// http://raytracey.blogspot.com 
-
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <GL/glew.h>
+#include <GL/glx.h>
 #include <CL/cl.hpp>
+#include <GL/glut.h>
+
+// TODO
+// cleanup()
+// check for cl-gl interop
 
 using namespace std;
 using namespace cl;
 
-const int image_width = 1280;
-const int image_height = 720;
+//#define GL_SHARING_EXTENSION "cl_khr_gl_sharing"
 
-cl_float4* cpu_output;
-CommandQueue queue;
+const int window_width = 1280;
+const int window_height = 720;
+
+// OpenGL vertex buffer object
+GLuint vbo;
+
+void render();
+
+void initGL(int argc, char** argv){
+	// init GLUT for OpenGL viewport
+	glutInit(&argc, argv);
+	// specify the display mode to be RGB and single buffering
+	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
+	// specify the initial window position
+	glutInitWindowPosition(50, 50);
+	// specify the initial window size
+	glutInitWindowSize(window_width, window_height);
+	// create the window and set title
+	glutCreateWindow("Basic OpenCL path tracer");
+
+	// register GLUT callback function to display graphics:
+	glutDisplayFunc(render);
+
+	// initialise OpenGL extensions
+	glewInit();
+
+	// initialise OpenGL
+	glClearColor(0.0, 0.0, 0.0, 1.0);
+	glMatrixMode(GL_PROJECTION);
+	gluOrtho2D(0.0, window_width, 0.0, window_height);
+}
+
+void createVBO(GLuint* vbo)
+{
+	//create vertex buffer object
+	glGenBuffers(1, vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, *vbo);
+
+	//initialise VBO
+	unsigned int size = window_width * window_height * sizeof(cl_float3);
+	glBufferData(GL_ARRAY_BUFFER, size, 0, GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void drawGL(){
+
+	//clear all pixels, then render from the vbo
+	glClear(GL_COLOR_BUFFER_BIT);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glVertexPointer(2, GL_FLOAT, 16, 0); // size (2, 3 or 4), type, stride, pointer
+	glColorPointer(4, GL_UNSIGNED_BYTE, 16, (GLvoid*)8); // size (3 or 4), type, stride, pointer
+
+	glEnableClientState(GL_VERTEX_ARRAY);
+	glEnableClientState(GL_COLOR_ARRAY);
+	glDrawArrays(GL_POINTS, 0, window_width * window_height);
+	glDisableClientState(GL_COLOR_ARRAY);
+	glDisableClientState(GL_VERTEX_ARRAY);
+
+	// flip backbuffer to screen
+	glutSwapBuffers();
+}
+
+void Timer(int value) {
+	glutPostRedisplay();
+	glutTimerFunc(15, Timer, 0);
+}
+
+
+const int sphere_count = 9;
+
+
+// OpenCL objects
 Device device;
+CommandQueue queue;
 Kernel kernel;
 Context context;
 Program program;
 Buffer cl_output;
 Buffer cl_spheres;
+BufferGL cl_vbo;
+vector<Memory> cl_vbos;
 
-// dummy variables are required for memory alignment
+// image buffer (not needed with real-time viewport)
+cl_float4* cpu_output;
+cl_int err;
+unsigned int framenumber = 0;
+
+
+// padding with dummy variables are required for memory alignment
 // float3 is considered as float4 by OpenCL
+// alignment can also be enforced by using __attribute__ ((aligned (16)));
+// see https://www.khronos.org/registry/cl/sdk/1.0/docs/man/xhtml/attributes-variables.html
+
 struct Sphere
 {
 	cl_float radius;
-	cl_float dummy1;   
+	cl_float dummy1;
 	cl_float dummy2;
 	cl_float dummy3;
 	cl_float3 position;
 	cl_float3 color;
 	cl_float3 emission;
 };
+
+Sphere cpu_spheres[sphere_count];
 
 void pickPlatform(Platform& platform, const vector<Platform>& platforms){
 
@@ -95,6 +181,11 @@ void initOpenCL()
 	for (int i = 0; i < platforms.size(); i++)
 		cout << "\t" << i + 1 << ": " << platforms[i].getInfo<CL_PLATFORM_NAME>() << endl;
 
+	cout << endl << "WARNING: " << endl << endl;
+	cout << "OpenCL-OpenGL interoperability is only tested " << endl;
+	cout << "on discrete GPUs from Nvidia and AMD" << endl;
+	cout << "Other devices (such as Intel integrated GPUs) may fail" << endl << endl;
+
 	// Pick one platform
 	Platform platform;
 	pickPlatform(platform, platforms);
@@ -102,7 +193,7 @@ void initOpenCL()
 
 	// Get available OpenCL devices on platform
 	vector<Device> devices;
-	platform.getDevices(CL_DEVICE_TYPE_ALL, &devices);
+	platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
 
 	cout << "Available OpenCL devices on this platform: " << endl << endl;
 	for (int i = 0; i < devices.size(); i++){
@@ -111,17 +202,29 @@ void initOpenCL()
 		cout << "\t\tMax work group size: " << devices[i].getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>() << endl << endl;
 	}
 
+
 	// Pick one device
+	//Device device;
 	pickDevice(device, devices);
 	cout << "\nUsing OpenCL device: \t" << device.getInfo<CL_DEVICE_NAME>() << endl;
-	cout << "\t\t\tMax compute units: " << device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>() << endl;
-	cout << "\t\t\tMax work group size: " << device.getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>() << endl;
 
-	// Create an OpenCL context and command queue on that device.
-	context = Context(device);
+	// Create an OpenCL context on that device.
+	// Windows specific OpenCL-OpenGL interop
+	cl_context_properties properties[] =
+	{
+		CL_GL_CONTEXT_KHR, (cl_context_properties)glXGetCurrentContext(),
+		CL_GLX_DISPLAY_KHR, (cl_context_properties)glXGetCurrentDisplay(),
+		CL_CONTEXT_PLATFORM, (cl_context_properties)platform(),
+		0
+	};
+
+	context = Context(device, properties);
+
+	// Create a command queue
 	queue = CommandQueue(context, device);
 
-	// Convert the OpenCL source code to a string
+
+	// Convert the OpenCL source code to a string// Convert the OpenCL source code to a string
 	string source;
 	ifstream file("opencl_kernel.cl");
 	if (!file){
@@ -136,37 +239,13 @@ void initOpenCL()
 
 	const char* kernel_source = source.c_str();
 
-	// Create an OpenCL program by performing runtime source compilation for the chosen device
+	// Create an OpenCL program with source
 	program = Program(context, kernel_source);
-	cl_int result = program.build({ device });
+
+	// Build the program for the selected device
+	cl_int result = program.build({ device }); // "-cl-fast-relaxed-math"
 	if (result) cout << "Error during compilation OpenCL code!!!\n (" << result << ")" << endl;
 	if (result == CL_BUILD_PROGRAM_FAILURE) printErrorLog(program, device);
-
-	// Create a kernel (entry point in the OpenCL source program)
-	kernel = Kernel(program, "render_kernel");
-}
-
-void cleanUp(){
-	delete cpu_output;
-}
-
-inline float clamp(float x){ return x < 0.0f ? 0.0f : x > 1.0f ? 1.0f : x; }
-
-// convert RGB float in range [0,1] to int in range [0, 255] and perform gamma correction
-inline int toInt(float x){ return int(clamp(x) * 255 + .5); }
-
-void saveImage(){
-	// write image to PPM file, a very simple image file format
-	// PPM files can be opened with IrfanView (download at www.irfanview.com) or GIMP
-	FILE *f = fopen("opencl_raytracer.ppm", "w");
-	fprintf(f, "P3\n%d %d\n%d\n", image_width, image_height, 255);
-
-	// loop over all pixels, write RGB values
-	for (int i = 0; i < image_width * image_height; i++)
-		fprintf(f, "%d %d %d ",
-		toInt(cpu_output[i].s[0]),
-		toInt(cpu_output[i].s[1]),
-		toInt(cpu_output[i].s[2]));
 }
 
 #define float3(x, y, z) {{x, y, z}}  // macro to replace ugly initializer braces
@@ -174,111 +253,171 @@ void saveImage(){
 void initScene(Sphere* cpu_spheres){
 
 	// left wall
-	cpu_spheres[0].radius	= 200.0f;
+	cpu_spheres[0].radius = 200.0f;
 	cpu_spheres[0].position = float3(-200.6f, 0.0f, 0.0f);
-	cpu_spheres[0].color    = float3(0.75f, 0.25f, 0.25f);
+	cpu_spheres[0].color = float3(0.75f, 0.25f, 0.25f);
 	cpu_spheres[0].emission = float3(0.0f, 0.0f, 0.0f);
 
 	// right wall
-	cpu_spheres[1].radius	= 200.0f;
+	cpu_spheres[1].radius = 200.0f;
 	cpu_spheres[1].position = float3(200.6f, 0.0f, 0.0f);
-	cpu_spheres[1].color    = float3(0.25f, 0.25f, 0.75f);
+	cpu_spheres[1].color = float3(0.25f, 0.25f, 0.75f);
 	cpu_spheres[1].emission = float3(0.0f, 0.0f, 0.0f);
 
 	// floor
-	cpu_spheres[2].radius	= 200.0f;
+	cpu_spheres[2].radius = 200.0f;
 	cpu_spheres[2].position = float3(0.0f, -200.4f, 0.0f);
-	cpu_spheres[2].color	= float3(0.9f, 0.8f, 0.7f);
+	cpu_spheres[2].color = float3(0.9f, 0.8f, 0.7f);
 	cpu_spheres[2].emission = float3(0.0f, 0.0f, 0.0f);
 
 	// ceiling
-	cpu_spheres[3].radius	= 200.0f;
+	cpu_spheres[3].radius = 200.0f;
 	cpu_spheres[3].position = float3(0.0f, 200.4f, 0.0f);
-	cpu_spheres[3].color	= float3(0.9f, 0.8f, 0.7f);
+	cpu_spheres[3].color = float3(0.9f, 0.8f, 0.7f);
 	cpu_spheres[3].emission = float3(0.0f, 0.0f, 0.0f);
 
 	// back wall
-	cpu_spheres[4].radius   = 200.0f;
+	cpu_spheres[4].radius = 200.0f;
 	cpu_spheres[4].position = float3(0.0f, 0.0f, -200.4f);
-	cpu_spheres[4].color    = float3(0.9f, 0.8f, 0.7f);
+	cpu_spheres[4].color = float3(0.9f, 0.8f, 0.7f);
 	cpu_spheres[4].emission = float3(0.0f, 0.0f, 0.0f);
 
-	// front wall 
-	cpu_spheres[5].radius   = 200.0f;
+	// front wall
+	cpu_spheres[5].radius = 200.0f;
 	cpu_spheres[5].position = float3(0.0f, 0.0f, 202.0f);
-	cpu_spheres[5].color    = float3(0.9f, 0.8f, 0.7f);
+	cpu_spheres[5].color = float3(0.9f, 0.8f, 0.7f);
 	cpu_spheres[5].emission = float3(0.0f, 0.0f, 0.0f);
 
 	// left sphere
-	cpu_spheres[6].radius   = 0.16f;
+	cpu_spheres[6].radius = 0.16f;
 	cpu_spheres[6].position = float3(-0.25f, -0.24f, -0.1f);
-	cpu_spheres[6].color    = float3(0.9f, 0.8f, 0.7f);
+	cpu_spheres[6].color = float3(0.9f, 0.8f, 0.7f);
 	cpu_spheres[6].emission = float3(0.0f, 0.0f, 0.0f);
 
 	// right sphere
-	cpu_spheres[7].radius   = 0.16f;
+	cpu_spheres[7].radius = 0.16f;
 	cpu_spheres[7].position = float3(0.25f, -0.24f, 0.1f);
-	cpu_spheres[7].color    = float3(0.9f, 0.8f, 0.7f);
+	cpu_spheres[7].color = float3(0.9f, 0.8f, 0.7f);
 	cpu_spheres[7].emission = float3(0.0f, 0.0f, 0.0f);
 
 	// lightsource
-	cpu_spheres[8].radius   = 1.0f;
+	cpu_spheres[8].radius = 1.0f;
 	cpu_spheres[8].position = float3(0.0f, 1.36f, 0.0f);
-	cpu_spheres[8].color    = float3(0.0f, 0.0f, 0.0f);
+	cpu_spheres[8].color = float3(0.0f, 0.0f, 0.0f);
 	cpu_spheres[8].emission = float3(9.0f, 8.0f, 6.0f);
-	
+
 }
 
-int main(){
+void initCLKernel(){
+
+	// pick a rendermode
+	unsigned int rendermode = 1;
+
+	// Create a kernel (entry point in the OpenCL source program)
+	kernel = Kernel(program, "render_kernel");
+
+	// specify OpenCL kernel arguments
+	//kernel.setArg(0, cl_output);
+	kernel.setArg(0, cl_spheres);
+	kernel.setArg(1, window_width);
+	kernel.setArg(2, window_height);
+	kernel.setArg(3, sphere_count);
+	kernel.setArg(4, cl_vbo);
+	kernel.setArg(5, framenumber);
+}
+
+void runKernel(){
+	// every pixel in the image has its own thread or "work item",
+	// so the total amount of work items equals the number of pixels
+	std::size_t global_work_size = window_width * window_height;
+	std::size_t local_work_size = kernel.getWorkGroupInfo<CL_KERNEL_WORK_GROUP_SIZE>(device);;
+
+	// Ensure the global work size is a multiple of local work size
+	if (global_work_size % local_work_size != 0)
+		global_work_size = (global_work_size / local_work_size + 1) * local_work_size;
+
+	//Make sure OpenGL is done using the VBOs
+	glFinish();
+
+	//this passes in the vector of VBO buffer objects
+	queue.enqueueAcquireGLObjects(&cl_vbos);
+	queue.finish();
+
+	// launch the kernel
+	queue.enqueueNDRangeKernel(kernel, NULL, global_work_size, local_work_size); // local_work_size
+	queue.finish();
+
+	//Release the VBOs so OpenGL can play with them
+	queue.enqueueReleaseGLObjects(&cl_vbos);
+	queue.finish();
+}
+
+
+// hash function to calculate new seed for each frame
+// see http://www.reedbeta.com/blog/2013/01/12/quick-and-easy-gpu-random-numbers-in-d3d11/
+unsigned int WangHash(unsigned int a) {
+	a = (a ^ 61) ^ (a >> 16);
+	a = a + (a << 3);
+	a = a ^ (a >> 4);
+	a = a * 0x27d4eb2d;
+	a = a ^ (a >> 15);
+	return a;
+}
+
+
+void render(){
+
+	framenumber++;
+
+	cpu_spheres[6].position.s[1] += 0.01;
+
+	queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, sphere_count * sizeof(Sphere), cpu_spheres);
+
+	kernel.setArg(0, cl_spheres);
+	kernel.setArg(5, WangHash(framenumber));
+
+	runKernel();
+
+	drawGL();
+}
+
+void cleanUp(){
+//	delete cpu_output;
+}
+
+int main(int argc, char** argv){
+
+	// initialise OpenGL (GLEW and GLUT window + callback functions)
+	initGL(argc, argv);
+	cout << "OpenGL initialized \n";
 
 	// initialise OpenCL
 	initOpenCL();
 
-	// allocate memory on CPU to hold the rendered image
-	cpu_output = new cl_float3[image_width * image_height];
+	// create vertex buffer object
+	createVBO(&vbo);
+
+	// call Timer():
+	Timer(0);
+
+	//make sure OpenGL is finished before we proceed
+	glFinish();
 
 	// initialise scene
-	const int sphere_count = 9;
-	Sphere cpu_spheres[sphere_count];
 	initScene(cpu_spheres);
 
-	// Create buffers on the OpenCL device for the image and the scene
-	cl_output = Buffer(context, CL_MEM_WRITE_ONLY, image_width * image_height * sizeof(cl_float3));
 	cl_spheres = Buffer(context, CL_MEM_READ_ONLY, sphere_count * sizeof(Sphere));
 	queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, sphere_count * sizeof(Sphere), cpu_spheres);
 
-	// specify OpenCL kernel arguments
-	kernel.setArg(0, cl_spheres);
-	kernel.setArg(1, image_width);
-	kernel.setArg(2, image_height);
-	kernel.setArg(3, sphere_count);
-	kernel.setArg(4, cl_output);
+	// create OpenCL buffer from OpenGL vertex buffer object
+	cl_vbo = BufferGL(context, CL_MEM_WRITE_ONLY, vbo);
+	cl_vbos.push_back(cl_vbo);
 
-	// every pixel in the image has its own thread or "work item",
-	// so the total amount of work items equals the number of pixels
-	std::size_t global_work_size = image_width * image_height;
-	std::size_t local_work_size = kernel.getWorkGroupInfo<CL_KERNEL_WORK_GROUP_SIZE>(device);
-	
-	cout << "Kernel work group size: " << local_work_size << endl;
+	// intitialise the kernel
+	initCLKernel();
 
-	// Ensure the global work size is a multiple of local work size
-	 if (global_work_size % local_work_size != 0)
-		global_work_size = (global_work_size / local_work_size + 1) * local_work_size;
-
-	cout << "Rendering started..." << endl;
-
-	// launch the kernel
-	queue.enqueueNDRangeKernel(kernel, NULL, global_work_size, local_work_size);
-	queue.finish();
-
-	cout << "Rendering done! \nCopying output from device to host" << endl;
-
-	// read and copy OpenCL output to CPU
-	queue.enqueueReadBuffer(cl_output, CL_TRUE, 0, image_width * image_height * sizeof(cl_float3), cpu_output);
-
-	// save image
-	saveImage();
-	cout << "Saved image to 'opencl_raytracer.ppm'" << endl;
+	// start rendering continuously
+	glutMainLoop();
 
 	// release memory
 	cleanUp();

@@ -1,7 +1,7 @@
 
 __constant float EPSILON = 0.00003f; /* required to compensate for limited float precision */
 __constant float PI = 3.14159265359f;
-__constant int SAMPLES = 128;
+__constant int SAMPLES = 16;
 
 typedef struct Ray{
 	float3 origin;
@@ -18,7 +18,7 @@ typedef struct Sphere{
 static float get_random(unsigned int *seed0, unsigned int *seed1) {
 
 	/* hash the seeds using bitwise AND operations and bitshifts */
-	*seed0 = 36969 * ((*seed0) & 65535) + ((*seed0) >> 16);  
+	*seed0 = 36969 * ((*seed0) & 65535) + ((*seed0) >> 16);
 	*seed1 = 18000 * ((*seed1) & 65535) + ((*seed1) >> 16);
 
 	unsigned int ires = ((*seed0) << 16) + (*seed1);
@@ -44,7 +44,7 @@ Ray createCamRay(const int x_coord, const int y_coord, const int width, const in
 	float fy2 = fy - 0.5f;
 
 	/* determine position of pixel on screen */
-	float3 pixel_pos = (float3)(fx2, -fy2, 0.0f);
+	float3 pixel_pos = (float3)(fx2, fy2, 0.0f);
 
 	/* create camera ray*/
 	Ray ray;
@@ -54,7 +54,7 @@ Ray createCamRay(const int x_coord, const int y_coord, const int width, const in
 	return ray;
 }
 
-				/* (__global Sphere* sphere, const Ray* ray) */
+/* (__global Sphere* sphere, const Ray* ray) */
 float intersect_sphere(const Sphere* sphere, const Ray* ray) /* version using local copy of sphere */
 {
 	float3 rayToCenter = sphere->pos - ray->origin;
@@ -73,7 +73,7 @@ float intersect_sphere(const Sphere* sphere, const Ray* ray) /* version using lo
 
 bool intersect_scene(__constant Sphere* spheres, const Ray* ray, float* t, int* sphere_id, const int sphere_count)
 {
-	/* initialise t to a very large number, 
+	/* initialise t to a very large number,
 	so t will be guaranteed to be smaller
 	when a hit with the scene occurs */
 
@@ -82,9 +82,9 @@ bool intersect_scene(__constant Sphere* spheres, const Ray* ray, float* t, int* 
 
 	/* check if the ray intersects each sphere in the scene */
 	for (int i = 0; i < sphere_count; i++)  {
-		
+
 		Sphere sphere = spheres[i]; /* create local copy of sphere */
-		
+
 		/* float hitdistance = intersect_sphere(&spheres[i], ray); */
 		float hitdistance = intersect_sphere(&sphere, ray);
 		/* keep track of the closest intersection and hitobject found so far */
@@ -123,9 +123,9 @@ float3 trace(__constant Sphere* spheres, const Ray* camray, const int sphere_cou
 
 		/* compute the hitpoint using the ray equation */
 		float3 hitpoint = ray.origin + ray.dir * t;
-		
+
 		/* compute the surface normal and flip it if necessary to face the incoming ray */
-		float3 normal = normalize(hitpoint - hitsphere.pos); 
+		float3 normal = normalize(hitpoint - hitsphere.pos);
 		float3 normal_facing = dot(normal, ray.dir) < 0.0f ? normal : normal * (-1.0f);
 
 		/* compute two random numbers to pick a random point on the hemisphere above the hitpoint*/
@@ -147,27 +147,29 @@ float3 trace(__constant Sphere* spheres, const Ray* camray, const int sphere_cou
 		ray.dir = newdir;
 
 		/* add the colour and light contributions to the accumulated colour */
-		accum_color += mask * hitsphere.emission; 
+		accum_color += mask * hitsphere.emission;
 
 		/* the mask colour picks up surface colours at each bounce */
-		mask *= hitsphere.color; 
-		
+		mask *= hitsphere.color;
+
 		/* perform cosine-weighted importance sampling for diffuse surfaces*/
-		mask *= dot(newdir, normal_facing); 
+		mask *= dot(newdir, normal_facing);
 	}
 
 	return accum_color;
 }
 
-__kernel void render_kernel(__constant Sphere* spheres, const int width, const int height, const int sphere_count, __global float3* output)
+union Colour{ float c; uchar4 components;};
+
+__kernel void render_kernel(__constant Sphere* spheres, const int width, const int height, const int sphere_count, __global float3* output, const int hashedframenumber)
 {
 	unsigned int work_item_id = get_global_id(0);	/* the unique global id of the work item for the current pixel */
 	unsigned int x_coord = work_item_id % width;			/* x-coordinate of the pixel */
 	unsigned int y_coord = work_item_id / width;			/* y-coordinate of the pixel */
-	
+
 	/* seeds for random number generator */
-	unsigned int seed0 = x_coord;
-	unsigned int seed1 = y_coord;
+	unsigned int seed0 = x_coord + hashedframenumber;
+	unsigned int seed1 = y_coord + hashedframenumber;
 
 	Ray camray = createCamRay(x_coord, y_coord, width, height);
 
@@ -178,6 +180,16 @@ __kernel void render_kernel(__constant Sphere* spheres, const int width, const i
 	for (int i = 0; i < SAMPLES; i++)
 		finalcolor += trace(spheres, &camray, sphere_count, &seed0, &seed1) * invSamples;
 
+	finalcolor = (float3)(clamp(finalcolor.x, 0.0f, 1.0f),
+		clamp(finalcolor.y, 0.0f, 1.0f), clamp(finalcolor.z, 0.0f, 1.0f));
+
+	union Colour fcolour;
+	fcolour.components = (uchar4)(
+		(unsigned char)(finalcolor.x * 255),
+		(unsigned char)(finalcolor.y * 255),
+		(unsigned char)(finalcolor.z * 255),
+		1);
+
 	/* store the pixelcolour in the output buffer */
-	output[work_item_id] = finalcolor;
+	output[work_item_id] = (float3)(x_coord, y_coord, fcolour.c);
 }
