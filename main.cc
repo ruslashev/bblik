@@ -47,19 +47,6 @@ std::vector<cl::Memory> cl_vbos;
 unsigned int frame_number = 0;
 
 #define _float3(x, y, z) {{x, y, z}}  // macro to replace ugly initializer braces
-
-#if 0
-Sphere cpu_spheres[] = {
-  Sphere(1e5,  _float3( 1e5 + 1, 40.8, 81.6),   _float3(.75,.25,.25),       _float3( 0,  0,  0)),
-  Sphere(1e5,  _float3(-1e5 + 99, 40.8, 81.6),  _float3(.25,.25,.75),       _float3( 0,  0,  0)),
-  Sphere(1e5,  _float3(50, 40.8, 1e5),          _float3(.25,.75,.25),       _float3( 0,  0,  0)),
-  Sphere(1e5,  _float3(50, 1e5, 81.6),          _float3(.75,.75,.75),       _float3( 0,  0,  0)),
-  Sphere(1e5,  _float3(50,-1e5 + 81.6, 81.6),   _float3(.75,.75,.75),       _float3( 0,  0,  0)),
-  Sphere(16.5, _float3(27, 16.5, 47),           _float3(.999, .999, .999),  _float3( 0,  0,  0)),
-  Sphere(16.5, _float3(73, 16.5, 78),           _float3(.999, .999, .999),  _float3( 0,  0,  0)),
-  Sphere(600,  _float3(50, 681.6 - .27, 81.6),  _float3(0, 0, 0),           _float3(12, 12, 12)),
-};
-#endif
 Sphere cpu_spheres[] = {
   Sphere(200.f, _float3(-200.6f, 0.0f, 0.0f),   _float3(0.75f, 0.25f, 0.25f), _float3(0.0f, 0.0f, 0.0f) ),
   Sphere(200.f, _float3(200.6f, 0.0f, 0.0f),    _float3(0.25f, 0.25f, 0.75f), _float3(0.0f, 0.0f, 0.0f) ),
@@ -96,8 +83,7 @@ void createVBO(GLuint* vbo) {
   glGenBuffers(1, vbo);
   glBindBuffer(GL_ARRAY_BUFFER, *vbo);
   unsigned int size = window_width * window_height * sizeof(cl_float3);
-  glBufferData(GL_ARRAY_BUFFER, size, 0, GL_DYNAMIC_DRAW);
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
+  glBufferData(GL_ARRAY_BUFFER, size, 0, GL_STREAM_DRAW);
 }
 
 void drawGL() {
@@ -119,6 +105,7 @@ void Timer(int value) {
   glutPostRedisplay();
   glutTimerFunc(15, Timer, 0);
 }
+
 void initOpenCL() {
   std::vector<cl::Platform> platforms;
   cl::Platform::get(&platforms);
@@ -183,6 +170,28 @@ void initCLKernel() {
   kernel.setArg(4, cl_vbo);
 }
 
+void init(int argc, char** argv) {
+  initGL(argc, argv);
+
+  initOpenCL();
+
+  createVBO(&vbo);
+
+  Timer(0);
+
+  // make sure OpenGL is finished before we proceed
+  glFinish();
+
+  cl_spheres = cl::Buffer(context, CL_MEM_READ_ONLY, num_spheres * sizeof(Sphere));
+  queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, num_spheres * sizeof(Sphere), cpu_spheres);
+
+  // create OpenCL buffer from OpenGL vertex buffer object
+  cl_vbo = cl::BufferGL(context, CL_MEM_WRITE_ONLY, vbo);
+  cl_vbos.push_back(cl_vbo);
+
+  initCLKernel();
+}
+
 void runKernel() {
   // every pixel in the image has its own thread or "work item",
   // so the total amount of work items equals the number of pixels
@@ -233,26 +242,8 @@ void render() {
   glutSetWindowTitle(title_string.c_str());
 }
 
-int main(int argc, char** argv) {
-  initGL(argc, argv);
-
-  initOpenCL();
-
-  createVBO(&vbo);
-
-  Timer(0);
-
-  // make sure OpenGL is finished before we proceed
-  glFinish();
-
-  cl_spheres = cl::Buffer(context, CL_MEM_READ_ONLY, num_spheres * sizeof(Sphere));
-  queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, num_spheres * sizeof(Sphere), cpu_spheres);
-
-  // create OpenCL buffer from OpenGL vertex buffer object
-  cl_vbo = cl::BufferGL(context, CL_MEM_WRITE_ONLY, vbo);
-  cl_vbos.push_back(cl_vbo);
-
-  initCLKernel();
+int main(int argc, char **argv) {
+  init(argc, argv);
 
   // start rendering continuously
   glutMainLoop();
