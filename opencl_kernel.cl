@@ -3,12 +3,12 @@ __constant float PI = 3.14159265359f;
 __constant int SAMPLES = 10;
 __constant float inf = 1e20f;
 
-typedef struct Ray {
+typedef struct {
   float3 origin;
   float3 dir;
 } Ray;
 
-typedef struct Sphere {
+typedef struct {
   float radius;
   float3 pos;
   float3 color;
@@ -75,10 +75,10 @@ float intersect_sphere(const Sphere *sphere, const Ray *ray) { /* version using 
   return 0.0f;
 }
 
-bool intersect_scene(__constant Sphere* spheres, const Ray* ray, float* t, int* sphere_id, const int sphere_count) {
+bool intersect_scene(__constant Sphere* spheres, const Ray* ray, float* t, int* sphere_id, const int num_spheres) {
   *t = inf;
 
-  for (int i = 0; i < sphere_count; i++) {
+  for (int i = 0; i < num_spheres; i++) {
     Sphere sphere = spheres[i]; /* create local copy of sphere */
     /* float hitdistance = intersect_sphere(&spheres[i], ray); */
     float hitdistance = intersect_sphere(&sphere, ray);
@@ -95,7 +95,7 @@ bool intersect_scene(__constant Sphere* spheres, const Ray* ray, float* t, int* 
 /* computes a path (starting from the camera) with a defined number of bounces, accumulates light/color at each bounce */
 /* each ray hitting a surface will be reflected in a random direction (by randomly sampling the hemisphere above the hitpoint) */
 /* small optimisation: diffuse ray directions are calculated using cosine weighted importance sampling */
-float3 trace(__constant Sphere* spheres, const Ray* camray, const int sphere_count, uint *rng_state) {
+float3 trace(__constant Sphere* spheres, const Ray* camray, const int num_spheres, uint *rng_state) {
   Ray ray = *camray;
 
   float3 accum_color = (float3)(0.0f, 0.0f, 0.0f);
@@ -106,7 +106,7 @@ float3 trace(__constant Sphere* spheres, const Ray* camray, const int sphere_cou
     int hitsphere_id = 0; /* index of intersected sphere */
 
     /* if ray misses scene, return background colour */
-    if (!intersect_scene(spheres, &ray, &t, &hitsphere_id, sphere_count))
+    if (!intersect_scene(spheres, &ray, &t, &hitsphere_id, num_spheres))
       return accum_color += mask * (float3)(0.15f, 0.15f, 0.25f);
 
     /* else, we've got a hit! Fetch the closest hit sphere */
@@ -152,7 +152,7 @@ float3 trace(__constant Sphere* spheres, const Ray* camray, const int sphere_cou
 
 union Colour { float c; uchar4 components; };
 
-__kernel void render_kernel(__constant Sphere *spheres, const int width, const int height, const int sphere_count, __global float3 *output) {
+__kernel void render_kernel(__constant Sphere *spheres, const int num_spheres, const int width, const int height, __global float3 *output) {
   unsigned int work_item_id = get_global_id(0); /* the unique global id of the work item for the current pixel */
 
   uint rng_state = wang_hash(work_item_id);
@@ -167,7 +167,7 @@ __kernel void render_kernel(__constant Sphere *spheres, const int width, const i
   float invSamples = 1.0f / SAMPLES;
 
   for (int i = 0; i < SAMPLES; i++)
-    finalcolor += trace(spheres, &camray, sphere_count, &rng_state) * invSamples;
+    finalcolor += trace(spheres, &camray, num_spheres, &rng_state) * invSamples;
 
   finalcolor = (float3)(clamp(finalcolor.x, 0.0f, 1.0f),
       clamp(finalcolor.y, 0.0f, 1.0f), clamp(finalcolor.z, 0.0f, 1.0f));

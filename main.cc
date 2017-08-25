@@ -8,13 +8,70 @@
 #include <CL/cl.hpp>
 #include <GL/glut.h>
 
-using namespace std;
-using namespace cl;
+// padding with dummy variables are required for memory alignment
+// float3 is considered as float4 by OpenCL
+// alignment can also be enforced by using __attribute__ ((aligned (16)));
+// see https://www.khronos.org/registry/cl/sdk/1.0/docs/man/xhtml/attributes-variables.html
+struct Sphere {
+  cl_float radius;
+  cl_float dummy1;
+  cl_float dummy2;
+  cl_float dummy3;
+  cl_float3 position;
+  cl_float3 color;
+  cl_float3 emission;
+  Sphere(cl_float n_radius, cl_float3 n_position, cl_float3 n_color
+      , cl_float3 n_emission)
+    : radius(n_radius)
+    , position(n_position)
+    , color(n_color)
+    , emission(n_emission) {
+  }
+};
 
 const int window_width = 1280;
 const int window_height = 720;
 
 GLuint vbo;
+
+cl::Device device;
+cl::CommandQueue queue;
+cl::Kernel kernel;
+cl::Context context;
+cl::Program program;
+cl::Buffer cl_output;
+cl::Buffer cl_spheres;
+cl::BufferGL cl_vbo;
+std::vector<cl::Memory> cl_vbos;
+
+unsigned int frame_number = 0;
+
+#define _float3(x, y, z) {{x, y, z}}  // macro to replace ugly initializer braces
+
+#if 0
+Sphere cpu_spheres[] = {
+  Sphere(1e5,  _float3( 1e5 + 1, 40.8, 81.6),   _float3(.75,.25,.25),       _float3( 0,  0,  0)),
+  Sphere(1e5,  _float3(-1e5 + 99, 40.8, 81.6),  _float3(.25,.25,.75),       _float3( 0,  0,  0)),
+  Sphere(1e5,  _float3(50, 40.8, 1e5),          _float3(.25,.75,.25),       _float3( 0,  0,  0)),
+  Sphere(1e5,  _float3(50, 1e5, 81.6),          _float3(.75,.75,.75),       _float3( 0,  0,  0)),
+  Sphere(1e5,  _float3(50,-1e5 + 81.6, 81.6),   _float3(.75,.75,.75),       _float3( 0,  0,  0)),
+  Sphere(16.5, _float3(27, 16.5, 47),           _float3(.999, .999, .999),  _float3( 0,  0,  0)),
+  Sphere(16.5, _float3(73, 16.5, 78),           _float3(.999, .999, .999),  _float3( 0,  0,  0)),
+  Sphere(600,  _float3(50, 681.6 - .27, 81.6),  _float3(0, 0, 0),           _float3(12, 12, 12)),
+};
+#endif
+Sphere cpu_spheres[] = {
+  Sphere(200.f, _float3(-200.6f, 0.0f, 0.0f),   _float3(0.75f, 0.25f, 0.25f), _float3(0.0f, 0.0f, 0.0f) ),
+  Sphere(200.f, _float3(200.6f, 0.0f, 0.0f),    _float3(0.25f, 0.25f, 0.75f), _float3(0.0f, 0.0f, 0.0f) ),
+  Sphere(200.f, _float3(0.0f, -200.4f, 0.0f),   _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
+  Sphere(200.f, _float3(0.0f, 200.4f, 0.0f),    _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
+  Sphere(200.f, _float3(0.0f, 0.0f, -200.4f),   _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
+  Sphere(200.f, _float3(0.0f, 0.0f, 202.0f),    _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
+  Sphere(0.16f, _float3(-0.25f, -0.24f, -0.1f), _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
+  Sphere(0.16f, _float3(0.25f, -0.24f, 0.1f),   _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
+  Sphere(  1.f, _float3(0.0f, 1.36f, 0.0f),     _float3(0.0f, 0.0f, 0.0f),    _float3(9.0f, 8.0f, 6.0f) )
+};
+const int num_spheres = sizeof(cpu_spheres) / sizeof(Sphere);
 
 void render();
 
@@ -62,49 +119,18 @@ void Timer(int value) {
   glutPostRedisplay();
   glutTimerFunc(15, Timer, 0);
 }
-
-const int sphere_count = 9;
-
-Device device;
-CommandQueue queue;
-Kernel kernel;
-Context context;
-Program program;
-Buffer cl_output;
-Buffer cl_spheres;
-BufferGL cl_vbo;
-vector<Memory> cl_vbos;
-
-unsigned int framenumber = 0;
-
-// padding with dummy variables are required for memory alignment
-// float3 is considered as float4 by OpenCL
-// alignment can also be enforced by using __attribute__ ((aligned (16)));
-// see https://www.khronos.org/registry/cl/sdk/1.0/docs/man/xhtml/attributes-variables.html
-struct Sphere {
-  cl_float radius;
-  cl_float dummy1;
-  cl_float dummy2;
-  cl_float dummy3;
-  cl_float3 position;
-  cl_float3 color;
-  cl_float3 emission;
-};
-
-Sphere cpu_spheres[sphere_count];
-
 void initOpenCL() {
-  vector<Platform> platforms;
-  Platform::get(&platforms);
-  cout << "Available OpenCL platforms: " << endl;
-  for (int i = 0; i < platforms.size(); i++)
+  std::vector<cl::Platform> platforms;
+  cl::Platform::get(&platforms);
+  printf("Available OpenCL platforms: \n");
+  for (size_t i = 0; i < platforms.size(); i++)
     printf("  %d. %s\n", i + 1, platforms[i].getInfo<CL_PLATFORM_NAME>().c_str());
-  Platform platform = platforms[0];
+  cl::Platform platform = platforms[0];
 
-  vector<Device> devices;
+  std::vector<cl::Device> devices;
   platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
-  cout << "Available OpenCL devices on this platform: " << endl;
-  for (int i = 0; i < devices.size(); i++)
+  printf("Available OpenCL devices on this platform: \n");
+  for (size_t i = 0; i < devices.size(); i++)
     printf("  %d. %s (max compute units %d, max work group size %d)\n"
         , i + 1
         , devices[i].getInfo<CL_DEVICE_NAME>().c_str()
@@ -120,97 +146,40 @@ void initOpenCL() {
     0
   };
 
-  context = Context(device, properties);
+  context = cl::Context(device, properties);
 
-  queue = CommandQueue(context, device);
+  queue = cl::CommandQueue(context, device);
 
-  ifstream ifs("opencl_kernel.cl");
+  std::ifstream ifs("opencl_kernel.cl");
   if (!ifs) {
     printf("missing file: \"opencl_kernel.cl\"\n");
-    cout << "\nNo OpenCL file found!" << endl << "Exiting..." << endl;
     exit(1);
   }
-  string source { istreambuf_iterator<char>(ifs), istreambuf_iterator<char>() };
+  std::string source { std::istreambuf_iterator<char>(ifs)
+    , std::istreambuf_iterator<char>() };
 
   const char *source_c_str = source.c_str();
 
-  program = Program(context, source_c_str);
+  program = cl::Program(context, source_c_str);
 
   cl_int result = program.build({ device }); // "-cl-fast-relaxed-math"
   if (result) {
     printf("Failed to compile OpenCL program (%d)\n", result);
     if (result == CL_BUILD_PROGRAM_FAILURE) {
-      string build_log = program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device);
+      std::string build_log = program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device);
       printf("Build log:\n%s\n", build_log.c_str());
     }
     exit(1);
   }
 }
 
-void initScene(Sphere* cpu_spheres) {
-#define float3(x, y, z) {{x, y, z}}  // macro to replace ugly initializer braces
-  // left wall
-  cpu_spheres[0].radius = 200.0f;
-  cpu_spheres[0].position = float3(-200.6f, 0.0f, 0.0f);
-  cpu_spheres[0].color = float3(0.75f, 0.25f, 0.25f);
-  cpu_spheres[0].emission = float3(0.0f, 0.0f, 0.0f);
-
-  // right wall
-  cpu_spheres[1].radius = 200.0f;
-  cpu_spheres[1].position = float3(200.6f, 0.0f, 0.0f);
-  cpu_spheres[1].color = float3(0.25f, 0.25f, 0.75f);
-  cpu_spheres[1].emission = float3(0.0f, 0.0f, 0.0f);
-
-  // floor
-  cpu_spheres[2].radius = 200.0f;
-  cpu_spheres[2].position = float3(0.0f, -200.4f, 0.0f);
-  cpu_spheres[2].color = float3(0.9f, 0.8f, 0.7f);
-  cpu_spheres[2].emission = float3(0.0f, 0.0f, 0.0f);
-
-  // ceiling
-  cpu_spheres[3].radius = 200.0f;
-  cpu_spheres[3].position = float3(0.0f, 200.4f, 0.0f);
-  cpu_spheres[3].color = float3(0.9f, 0.8f, 0.7f);
-  cpu_spheres[3].emission = float3(0.0f, 0.0f, 0.0f);
-
-  // back wall
-  cpu_spheres[4].radius = 200.0f;
-  cpu_spheres[4].position = float3(0.0f, 0.0f, -200.4f);
-  cpu_spheres[4].color = float3(0.9f, 0.8f, 0.7f);
-  cpu_spheres[4].emission = float3(0.0f, 0.0f, 0.0f);
-
-  // front wall
-  cpu_spheres[5].radius = 200.0f;
-  cpu_spheres[5].position = float3(0.0f, 0.0f, 202.0f);
-  cpu_spheres[5].color = float3(0.9f, 0.8f, 0.7f);
-  cpu_spheres[5].emission = float3(0.0f, 0.0f, 0.0f);
-
-  // left sphere
-  cpu_spheres[6].radius = 0.16f;
-  cpu_spheres[6].position = float3(-0.25f, -0.24f, -0.1f);
-  cpu_spheres[6].color = float3(0.9f, 0.8f, 0.7f);
-  cpu_spheres[6].emission = float3(0.0f, 0.0f, 0.0f);
-
-  // right sphere
-  cpu_spheres[7].radius = 0.16f;
-  cpu_spheres[7].position = float3(0.25f, -0.24f, 0.1f);
-  cpu_spheres[7].color = float3(0.9f, 0.8f, 0.7f);
-  cpu_spheres[7].emission = float3(0.0f, 0.0f, 0.0f);
-
-  // lightsource
-  cpu_spheres[8].radius = 1.0f;
-  cpu_spheres[8].position = float3(0.0f, 1.36f, 0.0f);
-  cpu_spheres[8].color = float3(0.0f, 0.0f, 0.0f);
-  cpu_spheres[8].emission = float3(9.0f, 8.0f, 6.0f);
-}
-
 void initCLKernel() {
-  kernel = Kernel(program, "render_kernel");
+  kernel = cl::Kernel(program, "render_kernel");
 
   kernel.setArg(0, cl_spheres);
-  kernel.setArg(1, window_width);
-  kernel.setArg(2, window_height);
-  kernel.setArg(3, sphere_count);
+  kernel.setArg(1, num_spheres);
+  kernel.setArg(2, window_width);
+  kernel.setArg(3, window_height);
   kernel.setArg(4, cl_vbo);
 }
 
@@ -243,12 +212,12 @@ void runKernel() {
 void render() {
   const auto time_render_begin = std::chrono::high_resolution_clock::now();
 
-  ++framenumber;
+  ++frame_number;
 
-  cpu_spheres[6].position.s[1] = sin((float)framenumber / 11.f) / 10.f;
-  cpu_spheres[6].position.s[0] = -0.25f + cos((float)framenumber / 7.f) / 10.f;
+  cpu_spheres[6].position.s[1] = sin((float)frame_number / 11.f) / 10.f;
+  cpu_spheres[6].position.s[0] = -0.25f + cos((float)frame_number / 7.f) / 10.f;
 
-  queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, sphere_count * sizeof(Sphere), cpu_spheres);
+  queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, num_spheres * sizeof(Sphere), cpu_spheres);
 
   kernel.setArg(0, cl_spheres);
 
@@ -273,16 +242,14 @@ int main(int argc, char** argv) {
 
   Timer(0);
 
-  initScene(cpu_spheres);
-
   // make sure OpenGL is finished before we proceed
   glFinish();
 
-  cl_spheres = Buffer(context, CL_MEM_READ_ONLY, sphere_count * sizeof(Sphere));
-  queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, sphere_count * sizeof(Sphere), cpu_spheres);
+  cl_spheres = cl::Buffer(context, CL_MEM_READ_ONLY, num_spheres * sizeof(Sphere));
+  queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, num_spheres * sizeof(Sphere), cpu_spheres);
 
   // create OpenCL buffer from OpenGL vertex buffer object
-  cl_vbo = BufferGL(context, CL_MEM_WRITE_ONLY, vbo);
+  cl_vbo = cl::BufferGL(context, CL_MEM_WRITE_ONLY, vbo);
   cl_vbos.push_back(cl_vbo);
 
   initCLKernel();
