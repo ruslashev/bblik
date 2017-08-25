@@ -6,64 +6,44 @@
 #include <CL/cl.hpp>
 #include <GL/glut.h>
 
-// TODO
-// cleanup()
-// check for cl-gl interop
-
 using namespace std;
 using namespace cl;
-
-//#define GL_SHARING_EXTENSION "cl_khr_gl_sharing"
 
 const int window_width = 1280;
 const int window_height = 720;
 
-// OpenGL vertex buffer object
 GLuint vbo;
 
 void render();
 
-void initGL(int argc, char** argv){
-  // init GLUT for OpenGL viewport
+void initGL(int argc, char** argv) {
   glutInit(&argc, argv);
-  // specify the display mode to be RGB and single buffering
   glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
-  // specify the initial window position
-  glutInitWindowPosition(50, 50);
-  // specify the initial window size
   glutInitWindowSize(window_width, window_height);
-  // create the window and set title
   glutCreateWindow("Basic OpenCL path tracer");
 
-  // register GLUT callback function to display graphics:
   glutDisplayFunc(render);
 
-  // initialise OpenGL extensions
   glewInit();
 
-  // initialise OpenGL
   glClearColor(0.0, 0.0, 0.0, 1.0);
   glMatrixMode(GL_PROJECTION);
   gluOrtho2D(0.0, window_width, 0.0, window_height);
 }
 
 void createVBO(GLuint* vbo) {
-  //create vertex buffer object
   glGenBuffers(1, vbo);
   glBindBuffer(GL_ARRAY_BUFFER, *vbo);
-
-  //initialise VBO
   unsigned int size = window_width * window_height * sizeof(cl_float3);
   glBufferData(GL_ARRAY_BUFFER, size, 0, GL_DYNAMIC_DRAW);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 void drawGL(){
-  //clear all pixels, then render from the vbo
   glClear(GL_COLOR_BUFFER_BIT);
   glBindBuffer(GL_ARRAY_BUFFER, vbo);
-  glVertexPointer(2, GL_FLOAT, 16, 0); // size (2, 3 or 4), type, stride, pointer
-  glColorPointer(4, GL_UNSIGNED_BYTE, 16, (GLvoid*)8); // size (3 or 4), type, stride, pointer
+  glVertexPointer(2, GL_FLOAT, 16, 0);
+  glColorPointer(4, GL_UNSIGNED_BYTE, 16, (GLvoid*)8);
 
   glEnableClientState(GL_VERTEX_ARRAY);
   glEnableClientState(GL_COLOR_ARRAY);
@@ -71,7 +51,6 @@ void drawGL(){
   glDisableClientState(GL_COLOR_ARRAY);
   glDisableClientState(GL_VERTEX_ARRAY);
 
-  // flip backbuffer to screen
   glutSwapBuffers();
 }
 
@@ -82,7 +61,6 @@ void Timer(int value) {
 
 const int sphere_count = 9;
 
-// OpenCL objects
 Device device;
 CommandQueue queue;
 Kernel kernel;
@@ -93,16 +71,12 @@ Buffer cl_spheres;
 BufferGL cl_vbo;
 vector<Memory> cl_vbos;
 
-// image buffer (not needed with real-time viewport)
-cl_float4* cpu_output;
-cl_int err;
 unsigned int framenumber = 0;
 
 // padding with dummy variables are required for memory alignment
 // float3 is considered as float4 by OpenCL
 // alignment can also be enforced by using __attribute__ ((aligned (16)));
 // see https://www.khronos.org/registry/cl/sdk/1.0/docs/man/xhtml/attributes-variables.html
-
 struct Sphere {
   cl_float radius;
   cl_float dummy1;
@@ -226,16 +200,9 @@ void initScene(Sphere* cpu_spheres) {
   cpu_spheres[8].emission = float3(9.0f, 8.0f, 6.0f);
 }
 
-void initCLKernel(){
-
-  // pick a rendermode
-  unsigned int rendermode = 1;
-
-  // Create a kernel (entry point in the OpenCL source program)
+void initCLKernel() {
   kernel = Kernel(program, "render_kernel");
 
-  // specify OpenCL kernel arguments
-  //kernel.setArg(0, cl_output);
   kernel.setArg(0, cl_spheres);
   kernel.setArg(1, window_width);
   kernel.setArg(2, window_height);
@@ -244,20 +211,20 @@ void initCLKernel(){
   kernel.setArg(5, framenumber);
 }
 
-void runKernel(){
+void runKernel() {
   // every pixel in the image has its own thread or "work item",
   // so the total amount of work items equals the number of pixels
   std::size_t global_work_size = window_width * window_height;
-  std::size_t local_work_size = kernel.getWorkGroupInfo<CL_KERNEL_WORK_GROUP_SIZE>(device);;
+  std::size_t local_work_size = kernel.getWorkGroupInfo<CL_KERNEL_WORK_GROUP_SIZE>(device);
 
   // Ensure the global work size is a multiple of local work size
   if (global_work_size % local_work_size != 0)
     global_work_size = (global_work_size / local_work_size + 1) * local_work_size;
 
-  //Make sure OpenGL is done using the VBOs
+  // Make sure OpenGL is done using the VBOs
   glFinish();
 
-  //this passes in the vector of VBO buffer objects
+  // this passes in the vector of VBO buffer objects
   queue.enqueueAcquireGLObjects(&cl_vbos);
   queue.finish();
 
@@ -265,11 +232,10 @@ void runKernel(){
   queue.enqueueNDRangeKernel(kernel, NULL, global_work_size, local_work_size); // local_work_size
   queue.finish();
 
-  //Release the VBOs so OpenGL can play with them
+  // Release the VBOs so OpenGL can play with them
   queue.enqueueReleaseGLObjects(&cl_vbos);
   queue.finish();
 }
-
 
 // hash function to calculate new seed for each frame
 // see http://www.reedbeta.com/blog/2013/01/12/quick-and-easy-gpu-random-numbers-in-d3d11/
@@ -282,10 +248,8 @@ unsigned int WangHash(unsigned int a) {
   return a;
 }
 
-
-void render(){
-
-  framenumber++;
+void render() {
+  ++framenumber;
 
   cpu_spheres[6].position.s[1] += 0.01;
 
@@ -299,29 +263,18 @@ void render(){
   drawGL();
 }
 
-void cleanUp(){
-  //	delete cpu_output;
-}
-
-int main(int argc, char** argv){
-
-  // initialise OpenGL (GLEW and GLUT window + callback functions)
+int main(int argc, char** argv) {
   initGL(argc, argv);
-  cout << "OpenGL initialized \n";
 
-  // initialise OpenCL
   initOpenCL();
 
-  // create vertex buffer object
   createVBO(&vbo);
 
-  // call Timer():
   Timer(0);
 
-  //make sure OpenGL is finished before we proceed
+  // make sure OpenGL is finished before we proceed
   glFinish();
 
-  // initialise scene
   initScene(cpu_spheres);
 
   cl_spheres = Buffer(context, CL_MEM_READ_ONLY, sphere_count * sizeof(Sphere));
@@ -331,13 +284,9 @@ int main(int argc, char** argv){
   cl_vbo = BufferGL(context, CL_MEM_WRITE_ONLY, vbo);
   cl_vbos.push_back(cl_vbo);
 
-  // intitialise the kernel
   initCLKernel();
 
   // start rendering continuously
   glutMainLoop();
-
-  // release memory
-  cleanUp();
-
 }
+
