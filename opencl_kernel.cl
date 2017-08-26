@@ -1,5 +1,5 @@
 __constant float EPSILON = 0.00003f; /* required to compensate for limited float precision */
-__constant float PI = 3.14159265359f;
+__constant float PI = 3.14159265358979323846f;
 __constant int SAMPLES = 10;
 __constant float inf = 1e20f;
 
@@ -126,7 +126,7 @@ float3 trace(__constant Sphere* spheres, const Ray* camray, const int num_sphere
 
     /* create a local orthogonal coordinate frame centered at the hitpoint */
     float3 w = normal_facing;
-    float3 axis = fabs(w.x) > 0.1f ? (float3)(0.0f, 1.0f, 0.0f) : (float3)(1.0f, 0.0f, 0.0f);
+    float3 axis = fabs(w.x) > EPSILON ? (float3)(0.0f, 1.0f, 0.0f) : (float3)(1.0f, 0.0f, 0.0f);
     float3 u = normalize(cross(axis, w));
     float3 v = cross(w, u);
 
@@ -145,12 +145,28 @@ float3 trace(__constant Sphere* spheres, const Ray* camray, const int num_sphere
 
     /* perform cosine-weighted importance sampling for diffuse surfaces*/
     mask *= dot(newdir, normal_facing);
+
+#if 0
+    // R.R.
+    if (bounces > 3) {
+      float p = max(mask.x, max(mask.y, mask.z));
+      if (random(rng_state) > p)
+        break;
+      mask *= 1.f / p;
+    }
+#endif
   }
 
   return accum_color;
 }
 
-union Colour { float c; uchar4 components; };
+float linear_to_srgb(float x) {
+  if (x < 0.0031308f)
+    x *= 12.92f;
+  else
+    x = 1.055f * pow(x, 1.f / 2.4f) - 0.055f;
+  return x;
+}
 
 __kernel void render_kernel(__constant Sphere *spheres, const int num_spheres, write_only image2d_t out, const int width, const int height) {
   unsigned int work_item_id = get_global_id(0); /* the unique global id of the work item for the current pixel */
@@ -169,8 +185,8 @@ __kernel void render_kernel(__constant Sphere *spheres, const int num_spheres, w
   for (int i = 0; i < SAMPLES; i++)
     finalcolor += trace(spheres, &camray, num_spheres, &rng_state) * invSamples;
 
-  finalcolor = (float3)(clamp(finalcolor.x, 0.0f, 1.0f),
-      clamp(finalcolor.y, 0.0f, 1.0f), clamp(finalcolor.z, 0.0f, 1.0f));
+  finalcolor = (float3)(linear_to_srgb(clamp(finalcolor.x, 0.0f, 1.0f)),
+      linear_to_srgb(clamp(finalcolor.y, 0.0f, 1.0f)), linear_to_srgb(clamp(finalcolor.z, 0.0f, 1.0f)));
 
   /* store the pixelcolour in the output buffer */
   if (x_coord < width && y_coord < height) {
