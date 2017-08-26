@@ -1,251 +1,227 @@
-#include <chrono>
-#include <fstream>
-#include <iostream>
-#include <vector>
-#include <cmath>
-#include <GL/glew.h>
+#include "screen.hh"
+#include "ogl.hh"
+#include "ocl_helpers.hh"
+#include "ogl_helpers.hh"
 #include <GL/glx.h>
-#include <CL/cl.hpp>
-#include <GL/glut.h>
 
-// padding with dummy variables are required for memory alignment
-// float3 is considered as float4 by OpenCL
-// alignment can also be enforced by using __attribute__ ((aligned (16)));
-// see https://www.khronos.org/registry/cl/sdk/1.0/docs/man/xhtml/attributes-variables.html
-struct Sphere {
-  cl_float radius;
-  cl_float dummy1;
-  cl_float dummy2;
-  cl_float dummy3;
-  cl_float3 position;
-  cl_float3 color;
-  cl_float3 emission;
-  Sphere(cl_float n_radius, cl_float3 n_position, cl_float3 n_color
-      , cl_float3 n_emission)
-    : radius(n_radius)
-    , position(n_position)
-    , color(n_color)
-    , emission(n_emission) {
-  }
+static const uint NUM_JSETS = 9;
+
+static const float matrix[16] =
+{
+  1.0f, 0.0f, 0.0f, 0.0f,
+  0.0f, 1.0f, 0.0f, 0.0f,
+  0.0f, 0.0f, 1.0f, 0.0f,
+  0.0f, 0.0f, 0.0f, 1.0f
 };
 
-const int window_width = 1280;
-const int window_height = 720;
-
-GLuint vbo;
-
-cl::Device device;
-cl::CommandQueue queue;
-cl::Kernel kernel;
-cl::Context context;
-cl::Program program;
-cl::Buffer cl_output;
-cl::Buffer cl_spheres;
-cl::BufferGL cl_vbo;
-std::vector<cl::Memory> cl_vbos;
-
-unsigned int frame_number = 0;
-
-#define _float3(x, y, z) {{x, y, z}}  // macro to replace ugly initializer braces
-Sphere cpu_spheres[] = {
-  Sphere(200.f, _float3(-200.6f, 0.0f, 0.0f),   _float3(0.75f, 0.25f, 0.25f), _float3(0.0f, 0.0f, 0.0f) ),
-  Sphere(200.f, _float3(200.6f, 0.0f, 0.0f),    _float3(0.25f, 0.25f, 0.75f), _float3(0.0f, 0.0f, 0.0f) ),
-  Sphere(200.f, _float3(0.0f, -200.4f, 0.0f),   _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
-  Sphere(200.f, _float3(0.0f, 200.4f, 0.0f),    _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
-  Sphere(200.f, _float3(0.0f, 0.0f, -200.4f),   _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
-  Sphere(200.f, _float3(0.0f, 0.0f, 202.0f),    _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
-  Sphere(0.16f, _float3(-0.25f, -0.24f, -0.1f), _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
-  Sphere(0.16f, _float3(0.25f, -0.24f, 0.1f),   _float3(0.9f, 0.8f, 0.7f),    _float3(0.0f, 0.0f, 0.0f) ),
-  Sphere(  1.f, _float3(0.0f, 1.36f, 0.0f),     _float3(0.0f, 0.0f, 0.0f),    _float3(9.0f, 8.0f, 6.0f) )
+static const float vertices[12] =
+{
+  -1.0f,-1.0f, 0.0,
+  1.0f,-1.0f, 0.0,
+  1.0f, 1.0f, 0.0,
+  -1.0f, 1.0f, 0.0
 };
-const int num_spheres = sizeof(cpu_spheres) / sizeof(Sphere);
 
-void render();
+static const float texcords[8] =
+{
+  0.0, 1.0,
+  1.0, 1.0,
+  1.0, 0.0,
+  0.0, 0.0
+};
 
-void initGL(int argc, char** argv) {
-  glutInit(&argc, argv);
-  glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
-  glutInitWindowSize(window_width, window_height);
-  glutCreateWindow("bblik");
+static const uint indices[6] = {0,1,2,0,2,3};
 
-  glutDisplayFunc(render);
+static const float CJULIA[] = {
+  -0.700f, 0.270f,
+  -0.618f, 0.000f,
+  -0.400f, 0.600f,
+  0.285f, 0.000f,
+  0.285f, 0.010f,
+  0.450f, 0.143f,
+  -0.702f,-0.384f,
+  -0.835f,-0.232f,
+  -0.800f, 0.156f,
+  0.279f, 0.000f
+};
 
-  glewInit();
+typedef struct {
+  Device d;
+  CommandQueue q;
+  Program p;
+  Kernel k;
+  ImageGL tex;
+  cl::size_t<3> dims;
+} process_params;
 
-  glClearColor(0.0, 0.0, 0.0, 1.0);
+typedef struct {
+  GLuint prg;
+  GLuint vao;
+  GLuint tex;
+} render_params;
 
-  // glPushMatrix for normal opengl drawing?
-  glMatrixMode(GL_PROJECTION);
-  gluOrtho2D(0.0, window_width, 0.0, window_height);
-}
+process_params params;
+render_params rparams;
 
-void createVBO(GLuint* vbo) {
-  glGenBuffers(1, vbo);
-  glBindBuffer(GL_ARRAY_BUFFER, *vbo);
-  unsigned int size = window_width * window_height * sizeof(cl_float3);
-  glBufferData(GL_ARRAY_BUFFER, size, 0, GL_STREAM_DRAW);
-}
+screen *g_screen = new screen("bblik", 800, 600);
 
-void drawGL() {
-  glClear(GL_COLOR_BUFFER_BIT);
-  glBindBuffer(GL_ARRAY_BUFFER, vbo);
-  glVertexPointer(2, GL_FLOAT, 16, 0);
-  glColorPointer(4, GL_UNSIGNED_BYTE, 16, (GLvoid*)8);
-
-  glEnableClientState(GL_VERTEX_ARRAY);
-  glEnableClientState(GL_COLOR_ARRAY);
-  glDrawArrays(GL_POINTS, 0, window_width * window_height);
-  glDisableClientState(GL_COLOR_ARRAY);
-  glDisableClientState(GL_VERTEX_ARRAY);
-
-  glutSwapBuffers();
-}
-
-void Timer(int value) {
-  glutPostRedisplay();
-  glutTimerFunc(15, Timer, 0);
-}
-
-void initOpenCL() {
-  std::vector<cl::Platform> platforms;
-  cl::Platform::get(&platforms);
-  printf("Available OpenCL platforms: \n");
-  for (size_t i = 0; i < platforms.size(); i++)
-    printf("  %d. %s\n", i + 1, platforms[i].getInfo<CL_PLATFORM_NAME>().c_str());
-  cl::Platform platform = platforms[0];
-
-  std::vector<cl::Device> devices;
-  platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
-  printf("Available OpenCL devices on this platform: \n");
-  for (size_t i = 0; i < devices.size(); i++)
-    printf("  %d. %s (max compute units %d, max work group size %d)\n"
-        , i + 1
-        , devices[i].getInfo<CL_DEVICE_NAME>().c_str()
-        , devices[i].getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>()
-        , devices[i].getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>());
-
-  device = devices[0];
-
-  cl_context_properties properties[] = {
+void load() {
+  Platform lPlatform = getPlatform();
+  // Select the default platform and create a context using this platform and the GPU
+  cl_context_properties cps[] = {
     CL_GL_CONTEXT_KHR, (cl_context_properties)glXGetCurrentContext(),
     CL_GLX_DISPLAY_KHR, (cl_context_properties)glXGetCurrentDisplay(),
-    CL_CONTEXT_PLATFORM, (cl_context_properties)platform(),
+    CL_CONTEXT_PLATFORM, (cl_context_properties)lPlatform(),
     0
   };
-
-  context = cl::Context(device, properties);
-
-  queue = cl::CommandQueue(context, device);
-
-  std::ifstream ifs("opencl_kernel.cl");
-  if (!ifs) {
-    printf("missing file: \"opencl_kernel.cl\"\n");
-    exit(1);
-  }
-  std::string source { std::istreambuf_iterator<char>(ifs)
-    , std::istreambuf_iterator<char>() };
-
-  const char *source_c_str = source.c_str();
-
-  program = cl::Program(context, source_c_str);
-
-  cl_int result = program.build({ device }); // "-cl-fast-relaxed-math"
-  if (result) {
-    printf("Failed to compile OpenCL program (%d)\n", result);
-    if (result == CL_BUILD_PROGRAM_FAILURE) {
-      std::string build_log = program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device);
-      printf("Build log:\n%s\n", build_log.c_str());
+  std::vector<Device> devices;
+  lPlatform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
+  // Get a list of devices on this platform
+  for (unsigned d=0; d<devices.size(); ++d) {
+    if (checkExtnAvailability(devices[d],CL_GL_SHARING_EXT)) {
+      params.d = devices[d];
+      break;
     }
-    exit(1);
   }
+  Context context(params.d, cps);
+  // Create a command queue and use the first device
+  params.q = CommandQueue(context, params.d);
+  cl_int errCode;
+  params.p = getProgram(context, "fractal.cl",errCode);
+
+  std::ostringstream options;
+  options << "";
+
+  params.p.build(std::vector<Device>(1, params.d), options.str().c_str());
+  params.k = Kernel(params.p, "fractal");
+  // create opengl stuff
+  rparams.prg = initShaders("fractal.vert", "fractal.frag");
+
+  glGenTextures(1, &rparams.tex);
+  glBindTexture(GL_TEXTURE_2D, rparams.tex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  // need to set GL_NEAREST
+  // (not GL_NEAREST_MIPMAP_* which would cause CL_INVALID_GL_OBJECT later)
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA /*GL_RGBA8*/
+      , g_screen->get_window_width(), g_screen->get_window_height(), 0
+      , GL_RGBA, GL_FLOAT, 0);
+
+  GLuint vbo  = createBuffer(12,vertices,GL_STATIC_DRAW);
+  GLuint tbo  = createBuffer(8,texcords,GL_STATIC_DRAW);
+  GLuint ibo;
+  glGenBuffers(1,&ibo);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER,sizeof(uint)*6,indices,GL_STATIC_DRAW);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);
+  // bind vao
+  glGenVertexArrays(1,&rparams.vao);
+  glBindVertexArray(rparams.vao);
+  // attach vbo
+  glBindBuffer(GL_ARRAY_BUFFER,vbo);
+  glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,0,NULL);
+  glEnableVertexAttribArray(0);
+  // attach tbo
+  glBindBuffer(GL_ARRAY_BUFFER,tbo);
+  glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,NULL);
+  glEnableVertexAttribArray(1);
+  // attach ibo
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,ibo);
+  glBindVertexArray(0);
+  // create opengl texture reference using opengl texture
+  params.tex = ImageGL(context,CL_MEM_READ_WRITE,GL_TEXTURE_2D,0,rparams.tex,&errCode);
+  if (errCode!=CL_SUCCESS) {
+    std::cout<<"Failed to create OpenGL texture refrence: "<<errCode<<std::endl;
+  }
+  params.dims[0] = g_screen->get_window_width();
+  params.dims[1] = g_screen->get_window_height();
+  params.dims[2] = 1;
 }
 
-void initCLKernel() {
-  kernel = cl::Kernel(program, "render_kernel");
-
-  kernel.setArg(0, cl_spheres);
-  kernel.setArg(1, num_spheres);
-  kernel.setArg(2, window_width);
-  kernel.setArg(3, window_height);
-  kernel.setArg(4, cl_vbo);
+static void key_event(char key, bool down) {
 }
 
-void init(int argc, char** argv) {
-  initGL(argc, argv);
+static void mouse_motion_event(float xrel, float yrel, int x, int y) {
+  // cam->update_view_angles(xrel, yrel);
+}
 
-  initOpenCL();
+static void mouse_button_event(int button, bool down, int x, int y) {
+}
 
-  createVBO(&vbo);
+static void update(double dt, double t) {
+}
 
-  Timer(0);
+unsigned divup(unsigned a, unsigned b) {
+  return (a+b-1)/b;
+}
 
-  // make sure OpenGL is finished before we proceed
+static void draw(double alpha) {
+  glViewport(0, 0, g_screen->get_window_width(), g_screen->get_window_height());
+
+  cl::Event ev;
   glFinish();
 
-  cl_spheres = cl::Buffer(context, CL_MEM_READ_ONLY, num_spheres * sizeof(Sphere));
-  queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, num_spheres * sizeof(Sphere), cpu_spheres);
+  std::vector<Memory> objs;
+  objs.clear();
+  objs.push_back(params.tex);
+  // flush opengl commands and wait for object acquisition
+  cl_int res = params.q.enqueueAcquireGLObjects(&objs,NULL,&ev);
+  ev.wait();
+  if (res!=CL_SUCCESS) {
+    std::cout<<"Failed acquiring GL object: "<<res<<std::endl;
+    exit(248);
+  }
+  NDRange local(16, 16);
+  NDRange global( local[0] * divup(params.dims[0], local[0]),
+      local[1] * divup(params.dims[1], local[1]));
+  // set kernel arguments
+  params.k.setArg(0, params.tex);
+  params.k.setArg(1, (int)params.dims[0]);
+  params.k.setArg(2, (int)params.dims[1]);
+  params.k.setArg(3, 1.0f);
+  params.k.setArg(4, 1.0f);
+  params.k.setArg(5, 0.0f);
+  params.k.setArg(6, 0.0f);
+  params.k.setArg(7, CJULIA[2*0+0]);
+  params.k.setArg(8, CJULIA[2*0+1]);
+  params.q.enqueueNDRangeKernel(params.k,cl::NullRange, global, local);
+  // release opengl object
+  res = params.q.enqueueReleaseGLObjects(&objs);
+  ev.wait();
+  if (res!=CL_SUCCESS) {
+    std::cout<<"Failed releasing GL object: "<<res<<std::endl;
+    exit(247);
+  }
+  params.q.finish();
 
-  // create OpenCL buffer from OpenGL vertex buffer object
-  cl_vbo = cl::BufferGL(context, CL_MEM_WRITE_ONLY, vbo);
-  cl_vbos.push_back(cl_vbo);
-
-  initCLKernel();
+  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  glClearColor(0.2,0.2,0.2,0.0);
+  glEnable(GL_DEPTH_TEST);
+  // bind shader
+  glUseProgram(rparams.prg);
+  // get uniform locations
+  int mat_loc = glGetUniformLocation(rparams.prg,"matrix");
+  int tex_loc = glGetUniformLocation(rparams.prg,"tex");
+  // bind texture
+  glActiveTexture(GL_TEXTURE0);
+  glUniform1i(tex_loc,0);
+  glBindTexture(GL_TEXTURE_2D,rparams.tex);
+  glGenerateMipmap(GL_TEXTURE_2D);
+  // set project matrix
+  glUniformMatrix4fv(mat_loc,1,GL_FALSE,matrix);
+  // now render stuff
+  glBindVertexArray(rparams.vao);
+  glDrawElements(GL_TRIANGLES,6,GL_UNSIGNED_INT,0);
+  glBindVertexArray(0);
 }
 
-void runKernel() {
-  // every pixel in the image has its own thread or "work item",
-  // so the total amount of work items equals the number of pixels
-  std::size_t global_work_size = window_width * window_height;
-  std::size_t local_work_size = kernel.getWorkGroupInfo<CL_KERNEL_WORK_GROUP_SIZE>(device);
-
-  // Ensure the global work size is a multiple of local work size
-  if (global_work_size % local_work_size != 0)
-    global_work_size = (global_work_size / local_work_size + 1) * local_work_size;
-
-  // Make sure OpenGL is done using the VBOs
-  glFinish();
-
-  // this passes in the vector of VBO buffer objects
-  queue.enqueueAcquireGLObjects(&cl_vbos);
-  queue.finish();
-
-  // launch the kernel
-  queue.enqueueNDRangeKernel(kernel, NULL, global_work_size, local_work_size); // local_work_size
-  queue.finish();
-
-  // Release the VBOs so OpenGL can play with them
-  queue.enqueueReleaseGLObjects(&cl_vbos);
-  queue.finish();
+static void cleanup() {
 }
 
-void render() {
-  const auto time_render_begin = std::chrono::high_resolution_clock::now();
-
-  ++frame_number;
-
-  cpu_spheres[6].position.s[1] = sin((float)frame_number / 11.f) / 10.f;
-  cpu_spheres[6].position.s[0] = -0.25f + cos((float)frame_number / 7.f) / 10.f;
-
-  queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0, num_spheres * sizeof(Sphere), cpu_spheres);
-
-  kernel.setArg(0, cl_spheres);
-
-  runKernel();
-
-  drawGL();
-
-  const auto time_render_end = std::chrono::high_resolution_clock::now();
-  const std::chrono::duration<double, std::milli> render_duration
-    = time_render_end - time_render_begin;
-  const std::string title_string = "bblik " + std::to_string(render_duration.count())
-    + " us/f, " + std::to_string(1. / (render_duration.count() / 1000.f)) + " f/s";
-  glutSetWindowTitle(title_string.c_str());
-}
-
-int main(int argc, char **argv) {
-  init(argc, argv);
-
-  // start rendering continuously
-  glutMainLoop();
+int main() {
+  g_screen->mainloop(load, key_event, mouse_motion_event, mouse_button_event
+      , update, draw, cleanup);
 }
 
