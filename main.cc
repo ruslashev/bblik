@@ -1,8 +1,7 @@
 #include "screen.hh"
 #include "ogl.hh"
-#include "ocl_helpers.hh"
-#include "ogl_helpers.hh"
 #include <GL/glx.h>
+#include <CL/cl.hpp>
 
 static const uint NUM_JSETS = 9;
 
@@ -13,24 +12,6 @@ static const float matrix[16] =
   0.0f, 0.0f, 1.0f, 0.0f,
   0.0f, 0.0f, 0.0f, 1.0f
 };
-
-static const float vertices[12] =
-{
-  -1.0f,-1.0f, 0.0,
-  1.0f,-1.0f, 0.0,
-  1.0f, 1.0f, 0.0,
-  -1.0f, 1.0f, 0.0
-};
-
-static const float texcords[8] =
-{
-  0.0, 1.0,
-  1.0, 1.0,
-  1.0, 0.0,
-  0.0, 0.0
-};
-
-static const uint indices[6] = {0,1,2,0,2,3};
 
 static const float CJULIA[] = {
   -0.700f, 0.270f,
@@ -45,57 +26,83 @@ static const float CJULIA[] = {
   0.279f, 0.000f
 };
 
-typedef struct {
-  Device d;
-  CommandQueue q;
-  Program p;
-  Kernel k;
+using namespace cl;
+using namespace std;
+
+struct process_params {
+  Device device;
+  Context context;
+  CommandQueue queue;
+  Program program;
+  Kernel kernel;
   ImageGL tex;
   cl::size_t<3> dims;
-} process_params;
+} params;
 
-typedef struct {
-  GLuint prg;
+struct render_params {
+  shader_program *sp;
   GLuint vao;
   GLuint tex;
-} render_params;
-
-process_params params;
-render_params rparams;
+  int mat_loc, tex_loc;
+} rparams;
 
 screen *g_screen = new screen("bblik", 800, 600);
 
+void check_interop_availiability(const cl::Device &device) {
+#if defined (__APPLE__) || defined(MACOSX)
+  std::string cl_gl_sharing_ext_name = "cl_APPLE_gl_sharing";
+#else
+  std::string cl_gl_sharing_ext_name = "cl_khr_gl_sharing";
+#endif
+  std::string extensions = device.getInfo<CL_DEVICE_EXTENSIONS>();
+  std::size_t found = extensions.find(cl_gl_sharing_ext_name); // TODO
+  if (found == std::string::npos)
+    die("device \"%s\" does not support OpenGL-OpenCL interoperability"
+        , device.getInfo<CL_DEVICE_NAME>().c_str());
+}
+
 void load() {
-  Platform lPlatform = getPlatform();
-  // Select the default platform and create a context using this platform and the GPU
-  cl_context_properties cps[] = {
+  std::vector<cl::Platform> platforms;
+  cl::Platform::get(&platforms);
+  cl::Platform platform = platforms[0];
+
+  std::vector<cl::Device> devices;
+  platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
+  params.device = devices[0];
+
+  cl_context_properties properties[] = {
     CL_GL_CONTEXT_KHR, (cl_context_properties)glXGetCurrentContext(),
     CL_GLX_DISPLAY_KHR, (cl_context_properties)glXGetCurrentDisplay(),
-    CL_CONTEXT_PLATFORM, (cl_context_properties)lPlatform(),
+    CL_CONTEXT_PLATFORM, (cl_context_properties)platform(),
     0
   };
-  std::vector<Device> devices;
-  lPlatform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
-  // Get a list of devices on this platform
-  for (unsigned d=0; d<devices.size(); ++d) {
-    if (checkExtnAvailability(devices[d],CL_GL_SHARING_EXT)) {
-      params.d = devices[d];
-      break;
+
+  params.context = cl::Context(params.device, properties);
+
+  params.queue = cl::CommandQueue(params.context, params.device);
+
+  std::string source = read_file_to_string("fractal.cl");
+  const char *source_c_str = source.c_str();
+  params.program = cl::Program(params.context, source_c_str);
+  // "-cl-fast-relaxed-math"
+  cl_int result = params.program.build({ params.device });
+  if (result) {
+    if (result == CL_BUILD_PROGRAM_FAILURE) {
+      std::string build_log
+        = params.program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(params.device);
+      printf("Build log:\n%s\n", build_log.c_str());
     }
+    die("Failed to compile OpenCL program (%d)", result);
   }
-  Context context(params.d, cps);
-  // Create a command queue and use the first device
-  params.q = CommandQueue(context, params.d);
-  cl_int errCode;
-  params.p = getProgram(context, "fractal.cl",errCode);
 
-  std::ostringstream options;
-  options << "";
+  params.kernel = Kernel(params.program, "fractal");
 
-  params.p.build(std::vector<Device>(1, params.d), options.str().c_str());
-  params.k = Kernel(params.p, "fractal");
   // create opengl stuff
-  rparams.prg = initShaders("fractal.vert", "fractal.frag");
+  std::string vertex_shader_source = read_file_to_string("screen.vert")
+    , fragment_shader_source = read_file_to_string("screen.frag");
+  rparams.sp = new shader_program(vertex_shader_source, fragment_shader_source);
+  rparams.mat_loc = rparams.sp->bind_uniform("matrix");
+  rparams.tex_loc = rparams.sp->bind_uniform("tex");
 
   glGenTextures(1, &rparams.tex);
   glBindTexture(GL_TEXTURE_2D, rparams.tex);
@@ -109,32 +116,45 @@ void load() {
       , g_screen->get_window_width(), g_screen->get_window_height(), 0
       , GL_RGBA, GL_FLOAT, 0);
 
-  GLuint vbo  = createBuffer(12,vertices,GL_STATIC_DRAW);
-  GLuint tbo  = createBuffer(8,texcords,GL_STATIC_DRAW);
-  GLuint ibo;
-  glGenBuffers(1,&ibo);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-  glBufferData(GL_ELEMENT_ARRAY_BUFFER,sizeof(uint)*6,indices,GL_STATIC_DRAW);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);
-  // bind vao
+  array_buffer vbo;
+  const std::vector<float> vertices = {
+    -1.0f, -1.0f,
+     1.0f, -1.0f,
+     1.0f,  1.0f,
+    -1.0f,  1.0f
+  };
+  vbo.bind();
+  vbo.upload(vertices);
+  array_buffer tbo;
+  const std::vector<float> texcords = {
+    0.0, 1.0,
+    1.0, 1.0,
+    1.0, 0.0,
+    0.0, 0.0
+  };
+  tbo.bind();
+  tbo.upload(texcords);
+  element_array_buffer ebo;
+  const std::vector<GLushort> elements = { 0, 1, 2, 0, 2, 3 };
+  ebo.bind();
+  ebo.upload(elements);
+  // bind vao and attach vbo, tbo and ebo
   glGenVertexArrays(1,&rparams.vao);
   glBindVertexArray(rparams.vao);
-  // attach vbo
-  glBindBuffer(GL_ARRAY_BUFFER,vbo);
-  glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,0,NULL);
+  vbo.bind();
+  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
   glEnableVertexAttribArray(0);
-  // attach tbo
-  glBindBuffer(GL_ARRAY_BUFFER,tbo);
-  glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,NULL);
+  tbo.bind();
+  glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, NULL);
   glEnableVertexAttribArray(1);
-  // attach ibo
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,ibo);
+  ebo.bind();
   glBindVertexArray(0);
   // create opengl texture reference using opengl texture
-  params.tex = ImageGL(context,CL_MEM_READ_WRITE,GL_TEXTURE_2D,0,rparams.tex,&errCode);
-  if (errCode!=CL_SUCCESS) {
-    std::cout<<"Failed to create OpenGL texture refrence: "<<errCode<<std::endl;
-  }
+  cl_int err_code;
+  params.tex = ImageGL(params.context, CL_MEM_READ_WRITE, GL_TEXTURE_2D, 0
+      , rparams.tex, &err_code);
+  assertf(err_code == CL_SUCCESS, "Failed to create OpenGL texture refrence "
+      "(%d)", err_code);
   params.dims[0] = g_screen->get_window_width();
   params.dims[1] = g_screen->get_window_height();
   params.dims[2] = 1;
@@ -167,53 +187,39 @@ static void draw(double alpha) {
   objs.clear();
   objs.push_back(params.tex);
   // flush opengl commands and wait for object acquisition
-  cl_int res = params.q.enqueueAcquireGLObjects(&objs,NULL,&ev);
+  cl_int res = params.queue.enqueueAcquireGLObjects(&objs, NULL, &ev);
   ev.wait();
-  if (res!=CL_SUCCESS) {
-    std::cout<<"Failed acquiring GL object: "<<res<<std::endl;
-    exit(248);
-  }
+  assertf(res == CL_SUCCESS, "Failed to acquire GL object (%d)", res);
   NDRange local(16, 16);
-  NDRange global( local[0] * divup(params.dims[0], local[0]),
-      local[1] * divup(params.dims[1], local[1]));
-  // set kernel arguments
-  params.k.setArg(0, params.tex);
-  params.k.setArg(1, (int)params.dims[0]);
-  params.k.setArg(2, (int)params.dims[1]);
-  params.k.setArg(3, 1.0f);
-  params.k.setArg(4, 1.0f);
-  params.k.setArg(5, 0.0f);
-  params.k.setArg(6, 0.0f);
-  params.k.setArg(7, CJULIA[2*0+0]);
-  params.k.setArg(8, CJULIA[2*0+1]);
-  params.q.enqueueNDRangeKernel(params.k,cl::NullRange, global, local);
+  NDRange global(local[0] * divup(params.dims[0], local[0])
+      , local[1] * divup(params.dims[1], local[1]));
+  params.kernel.setArg(0, params.tex);
+  params.kernel.setArg(1, (int)params.dims[0]);
+  params.kernel.setArg(2, (int)params.dims[1]);
+  params.kernel.setArg(3, 1.0f);
+  params.kernel.setArg(4, 1.0f);
+  params.kernel.setArg(5, 0.0f);
+  params.kernel.setArg(6, 0.0f);
+  params.kernel.setArg(7, CJULIA[2*0+0]);
+  params.kernel.setArg(8, CJULIA[2*0+1]);
+  params.queue.enqueueNDRangeKernel(params.kernel, cl::NullRange, global
+      , local);
   // release opengl object
-  res = params.q.enqueueReleaseGLObjects(&objs);
-  ev.wait();
-  if (res!=CL_SUCCESS) {
-    std::cout<<"Failed releasing GL object: "<<res<<std::endl;
-    exit(247);
-  }
-  params.q.finish();
+  res = params.queue.enqueueReleaseGLObjects(&objs);
+  ev.wait(); // TODO
+  assertf(res == CL_SUCCESS, "failed to release GL object (%d)", res);
+  params.queue.finish();
 
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-  glClearColor(0.2,0.2,0.2,0.0);
+  glClearColor(0.2, 0.2, 0.2, 1.0);
   glEnable(GL_DEPTH_TEST);
-  // bind shader
-  glUseProgram(rparams.prg);
-  // get uniform locations
-  int mat_loc = glGetUniformLocation(rparams.prg,"matrix");
-  int tex_loc = glGetUniformLocation(rparams.prg,"tex");
-  // bind texture
+  rparams.sp->use_this_prog();
   glActiveTexture(GL_TEXTURE0);
-  glUniform1i(tex_loc,0);
-  glBindTexture(GL_TEXTURE_2D,rparams.tex);
-  glGenerateMipmap(GL_TEXTURE_2D);
-  // set project matrix
-  glUniformMatrix4fv(mat_loc,1,GL_FALSE,matrix);
-  // now render stuff
+  glUniform1i(rparams.tex_loc, 0);
+  glBindTexture(GL_TEXTURE_2D, rparams.tex);
+  glUniformMatrix4fv(rparams.mat_loc, 1, GL_FALSE, matrix);
   glBindVertexArray(rparams.vao);
-  glDrawElements(GL_TRIANGLES,6,GL_UNSIGNED_INT,0);
+  glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
   glBindVertexArray(0);
 }
 
