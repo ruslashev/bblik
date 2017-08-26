@@ -26,17 +26,15 @@ static const float CJULIA[] = {
   0.279f, 0.000f
 };
 
-using namespace cl;
-using namespace std;
-
 struct process_params {
-  Device device;
-  Context context;
-  CommandQueue queue;
-  Program program;
-  Kernel kernel;
-  ImageGL tex;
+  cl::Device device;
+  cl::Context context;
+  cl::CommandQueue queue;
+  cl::Program program;
+  cl::Kernel kernel;
+  cl::ImageGL tex;
   cl::size_t<3> dims;
+  std::vector<cl::Memory> objs;
 } params;
 
 struct render_params {
@@ -48,7 +46,7 @@ struct render_params {
 
 screen *g_screen = new screen("bblik", 800, 600);
 
-void check_interop_availiability(const cl::Device &device) {
+void check_clgl_interop_availiability(const cl::Device &device) {
 #if defined (__APPLE__) || defined(MACOSX)
   std::string cl_gl_sharing_ext_name = "cl_APPLE_gl_sharing";
 #else
@@ -69,6 +67,7 @@ void load() {
   std::vector<cl::Device> devices;
   platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
   params.device = devices[0];
+  check_clgl_interop_availiability(params.device);
 
   cl_context_properties properties[] = {
     CL_GL_CONTEXT_KHR, (cl_context_properties)glXGetCurrentContext(),
@@ -95,9 +94,15 @@ void load() {
     die("Failed to compile OpenCL program (%d)", result);
   }
 
-  params.kernel = Kernel(params.program, "fractal");
+  params.kernel = cl::Kernel(params.program, "fractal");
+
+  params.dims[0] = g_screen->get_window_width();
+  params.dims[1] = g_screen->get_window_height();
+  params.dims[2] = 1;
 
   // create opengl stuff
+  glClearColor(0.2, 0.2, 0.2, 1.0);
+
   std::string vertex_shader_source = read_file_to_string("screen.vert")
     , fragment_shader_source = read_file_to_string("screen.frag");
   rparams.sp = new shader_program(vertex_shader_source, fragment_shader_source);
@@ -149,15 +154,14 @@ void load() {
   glEnableVertexAttribArray(1);
   ebo.bind();
   glBindVertexArray(0);
-  // create opengl texture reference using opengl texture
+
+  // create opencl texture reference using opengl texture
   cl_int err_code;
-  params.tex = ImageGL(params.context, CL_MEM_READ_WRITE, GL_TEXTURE_2D, 0
+  params.tex = cl::ImageGL(params.context, CL_MEM_READ_WRITE, GL_TEXTURE_2D, 0
       , rparams.tex, &err_code);
   assertf(err_code == CL_SUCCESS, "Failed to create OpenGL texture refrence "
       "(%d)", err_code);
-  params.dims[0] = g_screen->get_window_width();
-  params.dims[1] = g_screen->get_window_height();
-  params.dims[2] = 1;
+  params.objs.push_back(params.tex);
 }
 
 static void key_event(char key, bool down) {
@@ -180,19 +184,18 @@ unsigned divup(unsigned a, unsigned b) {
 static void draw(double alpha) {
   glViewport(0, 0, g_screen->get_window_width(), g_screen->get_window_height());
 
-  cl::Event ev;
   glFinish();
 
-  std::vector<Memory> objs;
-  objs.clear();
-  objs.push_back(params.tex);
-  // flush opengl commands and wait for object acquisition
-  cl_int res = params.queue.enqueueAcquireGLObjects(&objs, NULL, &ev);
-  ev.wait();
-  assertf(res == CL_SUCCESS, "Failed to acquire GL object (%d)", res);
-  NDRange local(16, 16);
-  NDRange global(local[0] * divup(params.dims[0], local[0])
-      , local[1] * divup(params.dims[1], local[1]));
+  params.queue.enqueueAcquireGLObjects(&params.objs);
+
+  size_t local_work_size = params.kernel.getWorkGroupInfo<
+    CL_KERNEL_WORK_GROUP_SIZE>(params.device)
+    , global_work_size = g_screen->get_window_width()
+    * g_screen->get_window_height();
+  if (global_work_size % local_work_size != 0)
+    global_work_size = (global_work_size / local_work_size + 1)
+      * local_work_size;
+
   params.kernel.setArg(0, params.tex);
   params.kernel.setArg(1, (int)params.dims[0]);
   params.kernel.setArg(2, (int)params.dims[1]);
@@ -202,17 +205,13 @@ static void draw(double alpha) {
   params.kernel.setArg(6, 0.0f);
   params.kernel.setArg(7, CJULIA[2*0+0]);
   params.kernel.setArg(8, CJULIA[2*0+1]);
-  params.queue.enqueueNDRangeKernel(params.kernel, cl::NullRange, global
-      , local);
-  // release opengl object
-  res = params.queue.enqueueReleaseGLObjects(&objs);
-  ev.wait(); // TODO
-  assertf(res == CL_SUCCESS, "failed to release GL object (%d)", res);
+  params.queue.enqueueNDRangeKernel(params.kernel, cl::NullRange
+      , global_work_size, local_work_size);
+
+  params.queue.enqueueReleaseGLObjects(&params.objs);
   params.queue.finish();
 
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-  glClearColor(0.2, 0.2, 0.2, 1.0);
-  glEnable(GL_DEPTH_TEST);
   rparams.sp->use_this_prog();
   glActiveTexture(GL_TEXTURE0);
   glUniform1i(rparams.tex_loc, 0);
