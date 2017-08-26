@@ -3,29 +3,6 @@
 #include <GL/glx.h>
 #include <CL/cl.hpp>
 
-static const uint NUM_JSETS = 9;
-
-static const float matrix[16] =
-{
-  1.0f, 0.0f, 0.0f, 0.0f,
-  0.0f, 1.0f, 0.0f, 0.0f,
-  0.0f, 0.0f, 1.0f, 0.0f,
-  0.0f, 0.0f, 0.0f, 1.0f
-};
-
-static const float CJULIA[] = {
-  -0.700f, 0.270f,
-  -0.618f, 0.000f,
-  -0.400f, 0.600f,
-  0.285f, 0.000f,
-  0.285f, 0.010f,
-  0.450f, 0.143f,
-  -0.702f,-0.384f,
-  -0.835f,-0.232f,
-  -0.800f, 0.156f,
-  0.279f, 0.000f
-};
-
 struct process_params {
   cl::Device device;
   cl::Context context;
@@ -36,6 +13,7 @@ struct process_params {
   cl::size_t<3> dims;
   std::vector<cl::Memory> objs;
 } params;
+cl::Buffer cl_spheres;
 
 struct render_params {
   shader_program *sp;
@@ -43,6 +21,44 @@ struct render_params {
   GLuint tex;
   int mat_loc, tex_loc;
 } rparams;
+
+struct Sphere {
+  cl_float radius;
+  cl_float dummy1;
+  cl_float dummy2;
+  cl_float dummy3;
+  cl_float3 position;
+  cl_float3 color;
+  cl_float3 emission;
+  Sphere(cl_float n_radius, cl_float3 n_position, cl_float3 n_color
+      , cl_float3 n_emission)
+    : radius(n_radius)
+    , position(n_position)
+    , color(n_color)
+    , emission(n_emission) {
+  }
+};
+
+#define _float3(x, y, z) {{ x, y, z }} // macro to replace ugly initializer braces
+Sphere cpu_spheres[] = {
+  Sphere(200.f, _float3(-200.6f, 0.0f, 0.0f),   _float3(0.75f, 0.25f, 0.25f), _float3(0, 0, 0)),
+  Sphere(200.f, _float3(200.6f, 0.0f, 0.0f),    _float3(0.25f, 0.25f, 0.75f), _float3(0, 0, 0)),
+  Sphere(200.f, _float3(0.0f, -200.4f, 0.0f),   _float3(0.9f, 0.8f, 0.7f),    _float3(0, 0, 0)),
+  Sphere(200.f, _float3(0.0f, 200.4f, 0.0f),    _float3(0.9f, 0.8f, 0.7f),    _float3(0, 0, 0)),
+  Sphere(200.f, _float3(0.0f, 0.0f, -200.4f),   _float3(0.9f, 0.8f, 0.7f),    _float3(0, 0, 0)),
+  Sphere(200.f, _float3(0.0f, 0.0f, 202.0f),    _float3(0.9f, 0.8f, 0.7f),    _float3(0, 0, 0)),
+  Sphere(0.16f, _float3(-0.25f, -0.24f, -0.1f), _float3(0.9f, 0.8f, 0.7f),    _float3(0, 0, 0)),
+  Sphere(0.16f, _float3(0.25f, -0.24f, 0.1f),   _float3(0.9f, 0.8f, 0.7f),    _float3(0, 0, 0)),
+  Sphere(  1.f, _float3(0.0f, 1.36f, 0.0f),     _float3(0.0f, 0.0f, 0.0f),    _float3(9.0f, 8.0f, 6.0f))
+};
+const int num_spheres = sizeof(cpu_spheres) / sizeof(Sphere);
+
+static const float y_flipped_proj_matrix[16] = {
+  1.f,  0.f, 0.f, 0.f,
+  0.f, -1.f, 0.f, 0.f,
+  0.f,  0.f, 1.f, 0.f,
+  0.f,  0.f, 0.f, 1.f
+};
 
 screen *g_screen = new screen("bblik", 800, 600);
 
@@ -80,7 +96,7 @@ void load() {
 
   params.queue = cl::CommandQueue(params.context, params.device);
 
-  std::string source = read_file_to_string("fractal.cl");
+  std::string source = read_file_to_string("opencl_kernel.cl");
   const char *source_c_str = source.c_str();
   params.program = cl::Program(params.context, source_c_str);
   // "-cl-fast-relaxed-math"
@@ -94,11 +110,14 @@ void load() {
     die("Failed to compile OpenCL program (%d)", result);
   }
 
-  params.kernel = cl::Kernel(params.program, "fractal");
+  params.kernel = cl::Kernel(params.program, "render_kernel");
 
   params.dims[0] = g_screen->get_window_width();
   params.dims[1] = g_screen->get_window_height();
   params.dims[2] = 1;
+
+  cl_spheres = cl::Buffer(params.context, CL_MEM_READ_ONLY
+      , num_spheres * sizeof(Sphere));
 
   // create opengl stuff
   glClearColor(0.2, 0.2, 0.2, 1.0);
@@ -177,16 +196,26 @@ static void mouse_button_event(int button, bool down, int x, int y) {
 static void update(double dt, double t) {
 }
 
-unsigned divup(unsigned a, unsigned b) {
-  return (a+b-1)/b;
-}
-
 static void draw(double alpha) {
   glViewport(0, 0, g_screen->get_window_width(), g_screen->get_window_height());
 
   glFinish();
 
+  cpu_spheres[6].position.s[1] = sin((float)g_screen->get_frame_idx() / 11.f)
+    / 10.f;
+  cpu_spheres[6].position.s[0] = -0.25f + cos((float)g_screen->get_frame_idx()
+      / 7.f) / 10.f;
+
+  params.queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0
+      , num_spheres * sizeof(Sphere), cpu_spheres);
+
   params.queue.enqueueAcquireGLObjects(&params.objs);
+
+  params.kernel.setArg(0, cl_spheres);
+  params.kernel.setArg(1, num_spheres);
+  params.kernel.setArg(2, params.tex);
+  params.kernel.setArg(3, g_screen->get_window_width());
+  params.kernel.setArg(4, g_screen->get_window_height());
 
   size_t local_work_size = params.kernel.getWorkGroupInfo<
     CL_KERNEL_WORK_GROUP_SIZE>(params.device)
@@ -196,15 +225,6 @@ static void draw(double alpha) {
     global_work_size = (global_work_size / local_work_size + 1)
       * local_work_size;
 
-  params.kernel.setArg(0, params.tex);
-  params.kernel.setArg(1, (int)params.dims[0]);
-  params.kernel.setArg(2, (int)params.dims[1]);
-  params.kernel.setArg(3, 1.0f);
-  params.kernel.setArg(4, 1.0f);
-  params.kernel.setArg(5, 0.0f);
-  params.kernel.setArg(6, 0.0f);
-  params.kernel.setArg(7, CJULIA[2*0+0]);
-  params.kernel.setArg(8, CJULIA[2*0+1]);
   params.queue.enqueueNDRangeKernel(params.kernel, cl::NullRange
       , global_work_size, local_work_size);
 
@@ -216,7 +236,7 @@ static void draw(double alpha) {
   glActiveTexture(GL_TEXTURE0);
   glUniform1i(rparams.tex_loc, 0);
   glBindTexture(GL_TEXTURE_2D, rparams.tex);
-  glUniformMatrix4fv(rparams.mat_loc, 1, GL_FALSE, matrix);
+  glUniformMatrix4fv(rparams.mat_loc, 1, GL_FALSE, y_flipped_proj_matrix);
   glBindVertexArray(rparams.vao);
   glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
   glBindVertexArray(0);

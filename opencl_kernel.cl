@@ -152,7 +152,7 @@ float3 trace(__constant Sphere* spheres, const Ray* camray, const int num_sphere
 
 union Colour { float c; uchar4 components; };
 
-__kernel void render_kernel(__constant Sphere *spheres, const int num_spheres, const int width, const int height, __global float3 *output) {
+__kernel void render_kernel(__constant Sphere *spheres, const int num_spheres, write_only image2d_t out, const int width, const int height) {
   unsigned int work_item_id = get_global_id(0); /* the unique global id of the work item for the current pixel */
 
   uint rng_state = wang_hash(work_item_id);
@@ -172,14 +172,9 @@ __kernel void render_kernel(__constant Sphere *spheres, const int num_spheres, c
   finalcolor = (float3)(clamp(finalcolor.x, 0.0f, 1.0f),
       clamp(finalcolor.y, 0.0f, 1.0f), clamp(finalcolor.z, 0.0f, 1.0f));
 
-  union Colour fcolour;
-  fcolour.components = (uchar4)(
-      (unsigned char)(finalcolor.x * 255),
-      (unsigned char)(finalcolor.y * 255),
-      (unsigned char)(finalcolor.z * 255),
-      1);
-
   /* store the pixelcolour in the output buffer */
-  output[work_item_id] = (float3)(x_coord, y_coord, fcolour.c);
+  if (x_coord < width && y_coord < height) {
+      write_imagef(out, (int2)(x_coord, y_coord), (float4)(finalcolor.x, finalcolor.y, finalcolor.z, 1.0));
+  }
 }
 
