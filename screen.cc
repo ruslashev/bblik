@@ -66,7 +66,6 @@ void screen::mainloop(void (*load_cb)(void)
   double t = 0, dt = 1. / ticks_per_second;
   double current_time = get_time_in_seconds(), accumulator = 0;
 
-  uint64_t total_frames = 0;
   int draw_count = 0;
 
   while (running) {
@@ -124,13 +123,13 @@ void screen::mainloop(void (*load_cb)(void)
     ++_frame_idx;
 
     { // fps counter
-      total_frames++;
       draw_count++;
       if (draw_count == 700) {
         draw_count = 0;
-        double seconds_per_frame = get_time_in_seconds() - real_time
+        double now = get_time_in_seconds()
+          , seconds_per_frame = now - real_time
           , fps = 1. / seconds_per_frame
-          , fpsavg = (double)total_frames / get_time_in_seconds()
+          , fpsavg = (double)_frame_idx / now
           , mspf = seconds_per_frame * 1000.;
         char title[256];
         snprintf(title, 256, "%s | %7.2f ms/f, %7.2f f/s, %7.2f f/s avg"

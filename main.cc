@@ -141,23 +141,23 @@ void load() {
       , GL_RGBA, GL_FLOAT, 0);
 
   array_buffer vbo;
-  const std::vector<float> vertices = {
+  const std::vector<float> screen_vertices = {
     -1.0f, -1.0f,
      1.0f, -1.0f,
      1.0f,  1.0f,
     -1.0f,  1.0f
   };
   vbo.bind();
-  vbo.upload(vertices);
+  vbo.upload(screen_vertices);
   array_buffer tbo;
-  const std::vector<float> texcords = {
+  const std::vector<float> screen_texcords = {
     0.0, 1.0,
     1.0, 1.0,
     1.0, 0.0,
     0.0, 0.0
   };
   tbo.bind();
-  tbo.upload(texcords);
+  tbo.upload(screen_texcords);
   element_array_buffer ebo;
   const std::vector<GLushort> elements = { 0, 1, 2, 0, 2, 3 };
   ebo.bind();
@@ -194,17 +194,14 @@ static void mouse_button_event(int button, bool down, int x, int y) {
 }
 
 static void update(double dt, double t) {
+  cpu_spheres[6].position.s[1] = sin((t * 10.f) / 11.f) / 10.f;
+  cpu_spheres[6].position.s[0] = -0.25f + cos((t * 10.f) / 5.f) / 8.f;
 }
 
 static void draw(double alpha) {
   glViewport(0, 0, g_screen->get_window_width(), g_screen->get_window_height());
 
   glFinish();
-
-  cpu_spheres[6].position.s[1] = sin((float)g_screen->get_frame_idx() / 11.f)
-    / 10.f;
-  cpu_spheres[6].position.s[0] = -0.25f + cos((float)g_screen->get_frame_idx()
-      / 7.f) / 10.f;
 
   params.queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0
       , num_spheres * sizeof(Sphere), cpu_spheres);
