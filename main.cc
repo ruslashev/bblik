@@ -53,11 +53,11 @@ Sphere cpu_spheres[] = {
 };
 const int num_spheres = sizeof(cpu_spheres) / sizeof(Sphere);
 
-static const float y_flipped_proj_matrix[16] = {
-  1.f,  0.f, 0.f, 0.f,
-  0.f, -1.f, 0.f, 0.f,
-  0.f,  0.f, 1.f, 0.f,
-  0.f,  0.f, 0.f, 1.f
+static const float proj_matrix[16] = {
+  1.f, 0.f, 0.f, 0.f,
+  0.f, 1.f, 0.f, 0.f,
+  0.f, 0.f, 1.f, 0.f,
+  0.f, 0.f, 0.f, 1.f
 };
 
 screen *g_screen = new screen("bblik", 800, 600);
@@ -142,19 +142,19 @@ void load() {
 
   array_buffer vbo;
   const std::vector<float> screen_vertices = {
-    -1.0f, -1.0f,
-     1.0f, -1.0f,
-     1.0f,  1.0f,
-    -1.0f,  1.0f
+    -1.f, -1.f,
+     1.f, -1.f,
+     1.f,  1.f,
+    -1.f,  1.f
   };
   vbo.bind();
   vbo.upload(screen_vertices);
   array_buffer tbo;
   const std::vector<float> screen_texcords = {
-    0.0, 1.0,
-    1.0, 1.0,
-    1.0, 0.0,
-    0.0, 0.0
+    0., 0., // y flipped
+    1., 0.,
+    1., 1.,
+    0., 1.
   };
   tbo.bind();
   tbo.upload(screen_texcords);
@@ -234,7 +234,7 @@ static void draw(double alpha) {
   glActiveTexture(GL_TEXTURE0);
   glUniform1i(rparams.tex_loc, 0);
   glBindTexture(GL_TEXTURE_2D, rparams.tex);
-  glUniformMatrix4fv(rparams.mat_loc, 1, GL_FALSE, y_flipped_proj_matrix);
+  glUniformMatrix4fv(rparams.mat_loc, 1, GL_FALSE, proj_matrix);
   glBindVertexArray(rparams.vao);
   glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
   glBindVertexArray(0);
