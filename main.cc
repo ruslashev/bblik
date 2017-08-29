@@ -176,7 +176,7 @@ void load() {
 
   // create opencl texture reference using opengl texture
   cl_int err_code;
-  params.tex = cl::ImageGL(params.context, CL_MEM_READ_WRITE, GL_TEXTURE_2D, 0
+  params.tex = cl::ImageGL(params.context, CL_MEM_WRITE_ONLY, GL_TEXTURE_2D, 0
       , rparams.tex, &err_code);
   assertf(err_code == CL_SUCCESS, "Failed to create OpenGL texture refrence "
       "(%d)", err_code);
@@ -194,8 +194,9 @@ static void mouse_button_event(int button, bool down, int x, int y) {
 }
 
 static void update(double dt, double t) {
-  cpu_spheres[6].position.s[1] = sin((t * 10.f) / 11.f) / 10.f;
   cpu_spheres[6].position.s[0] = -0.25f + cos((t * 10.f) / 5.f) / 8.f;
+  cpu_spheres[6].position.s[1] = sin((t * 10.f) / 11.f) / 10.f;
+  cpu_spheres[6].position.s[2] = -0.1f + cos((t * 10.f) / 7.f) / 6.f;
 }
 
 static void draw(double alpha) {
@@ -203,7 +204,7 @@ static void draw(double alpha) {
 
   glFinish();
 
-  params.queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0
+  params.queue.enqueueWriteBuffer(cl_spheres, CL_FALSE, 0
       , num_spheres * sizeof(Sphere), cpu_spheres);
 
   params.queue.enqueueAcquireGLObjects(&params.objs);
