@@ -125,8 +125,10 @@ void load() {
   std::string vertex_shader_source = read_file_to_string("screen.vert")
     , fragment_shader_source = read_file_to_string("screen.frag");
   rparams.sp = new shader_program(vertex_shader_source, fragment_shader_source);
+  rparams.sp->use_this_prog();
   rparams.mat_loc = rparams.sp->bind_uniform("matrix");
   rparams.tex_loc = rparams.sp->bind_uniform("tex");
+  glUniform1i(rparams.tex_loc, 0);
 
   glGenTextures(1, &rparams.tex);
   glBindTexture(GL_TEXTURE_2D, rparams.tex);
@@ -232,7 +234,6 @@ static void draw(double alpha) {
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   rparams.sp->use_this_prog();
   glActiveTexture(GL_TEXTURE0);
-  glUniform1i(rparams.tex_loc, 0);
   glBindTexture(GL_TEXTURE_2D, rparams.tex);
   glUniformMatrix4fv(rparams.mat_loc, 1, GL_FALSE, proj_matrix);
   glBindVertexArray(rparams.vao);
