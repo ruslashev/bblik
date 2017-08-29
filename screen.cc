@@ -112,11 +112,15 @@ void screen::mainloop(void (*load_cb)(void)
       accumulator -= dt;
     }
 
-    auto draw_begin = std::chrono::high_resolution_clock::now();
+    auto draw_begin_w = std::chrono::high_resolution_clock::now();
+    std::clock_t draw_begin_c = std::clock();
     draw_cb(accumulator / dt);
-    auto draw_end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::micro> draw_duration = draw_end
-      - draw_begin;
+    auto draw_end_w = std::chrono::high_resolution_clock::now();
+    std::clock_t draw_end_c = std::clock();
+    std::chrono::duration<double, std::milli> draw_duration_w = draw_end_w
+      - draw_begin_w;
+    float draw_duration_c = ((float)(draw_end_c - draw_begin_c) / CLOCKS_PER_SEC)
+      * 1000.f;
 
     SDL_GL_SwapWindow(_window);
 
@@ -124,7 +128,7 @@ void screen::mainloop(void (*load_cb)(void)
 
     { // fps counter
       draw_count++;
-      if (draw_count == 700) {
+      if (1 || draw_count == 700) {
         draw_count = 0;
         double now = get_time_in_seconds()
           , seconds_per_frame = now - real_time
@@ -133,8 +137,8 @@ void screen::mainloop(void (*load_cb)(void)
           , mspf = seconds_per_frame * 1000.;
         char title[256];
         snprintf(title, 256, "%s | %7.2f ms/f, %7.2f f/s, %7.2f f/s avg"
-            ", %.3f us/d", _title.c_str(), mspf, fps, fpsavg
-            , draw_duration.count());
+            ", %.3f ms/d (wall) %.3f ms/d (cpu)", _title.c_str(), mspf, fps
+            , fpsavg, draw_duration_w.count(), draw_duration_c);
         SDL_SetWindowTitle(_window, title);
       }
     }
