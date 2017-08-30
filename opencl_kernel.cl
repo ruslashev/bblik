@@ -31,7 +31,7 @@ uint rand_xorshift(uint *rng_state) {
   return *rng_state;
 }
 
-float random(uint rng_state) {
+float random(uint *rng_state) {
   return (float)(rand_xorshift(rng_state)) * (1.0 / 4294967296.0);
 }
 
@@ -58,8 +58,8 @@ Ray create_cam_ray(const int x_coord, const int y_coord, const int width
   return ray;
 }
 
-// (__global Sphere* sphere, const Ray* ray) */
-// version using local copy of sphere */
+// (__global Sphere* sphere, const Ray* ray)
+// version using local copy of sphere
 float intersect_sphere(const Sphere *sphere, const Ray *ray) {
   float3 ray_to_center = sphere->pos - ray->origin;
   float b = dot(ray_to_center, ray->dir);
@@ -111,7 +111,7 @@ float3 trace(__constant Sphere *spheres, const Ray *camray
   float3 mask = (float3)(1.f, 1.f, 1.f);
 
   for (int bounces = 0; bounces < 8; bounces++) {
-    float t;   // distance to intersection
+    float t; // distance to intersection
     int hitsphere_id = 0; // index of intersected sphere
 
     // if ray misses scene, return background colour
@@ -183,6 +183,15 @@ float linear_to_srgb(float x) {
   return x;
 }
 
+float linear_to_srgb_clamp(float x) {
+  return linear_to_srgb(clamp(x, 0.f, 1.f));
+}
+
+float4 linear_to_srgb_clamp4(float3 c) {
+  return (float4)(linear_to_srgb_clamp(c.x), linear_to_srgb_clamp(c.y)
+      , linear_to_srgb_clamp(c.z), 1.f);
+}
+
 __kernel void render_kernel(__constant Sphere *spheres, const int num_spheres,
     write_only image2d_t out, const int width, const int height) {
   // the unique global id of the work item for the current pixel
@@ -193,22 +202,18 @@ __kernel void render_kernel(__constant Sphere *spheres, const int num_spheres,
   unsigned int x_coord = work_item_id % width;
   unsigned int y_coord = work_item_id / width;
 
+  if (x_coord >= width || y_coord >= height)
+    return;
+
   Ray camray = create_cam_ray(x_coord, y_coord, width, height);
 
   // add the light contribution of each sample and average over all samples
   float3 finalcolor = (float3)(0.f, 0.f, 0.f);
-  float invSamples = 1.f / SAMPLES;
+  float inv_samples = 1.f / SAMPLES;
 
   for (int i = 0; i < SAMPLES; i++)
-    finalcolor += trace(spheres, &camray, num_spheres, &rng_state) * invSamples;
+    finalcolor += trace(spheres, &camray, num_spheres, &rng_state) * inv_samples;
 
-  finalcolor = (float3)(linear_to_srgb(clamp(finalcolor.x, 0.f, 1.f))
-      , linear_to_srgb(clamp(finalcolor.y, 0.f, 1.f))
-      , linear_to_srgb(clamp(finalcolor.z, 0.f, 1.f)));
-
-  // store the pixelcolour in the output buffer
-  if (x_coord < width && y_coord < height)
-      write_imagef(out, (int2)(x_coord, y_coord), (float4)(finalcolor.x
-            , finalcolor.y, finalcolor.z, 1.0));
+  write_imagef(out, (int2)(x_coord, y_coord), linear_to_srgb_clamp4(finalcolor));
 }
 

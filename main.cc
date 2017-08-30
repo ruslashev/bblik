@@ -10,7 +10,6 @@ struct process_params {
   cl::Program program;
   cl::Kernel kernel;
   cl::ImageGL tex;
-  cl::size_t<3> dims;
   std::vector<cl::Memory> objs;
 } params;
 cl::Buffer cl_spheres;
@@ -112,10 +111,6 @@ void load() {
 
   params.kernel = cl::Kernel(params.program, "render_kernel");
 
-  params.dims[0] = g_screen->get_window_width();
-  params.dims[1] = g_screen->get_window_height();
-  params.dims[2] = 1;
-
   cl_spheres = cl::Buffer(params.context, CL_MEM_READ_ONLY
       , num_spheres * sizeof(Sphere));
 
@@ -138,9 +133,9 @@ void load() {
   // (not GL_NEAREST_MIPMAP_* which would cause CL_INVALID_GL_OBJECT later)
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA /*GL_RGBA8*/
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8 /*GL_RGBA8*/
       , g_screen->get_window_width(), g_screen->get_window_height(), 0
-      , GL_RGBA, GL_FLOAT, 0);
+      , GL_RGBA, GL_FLOAT, nullptr);
 
   array_buffer vbo;
   const std::vector<float> screen_vertices = {
@@ -213,7 +208,7 @@ static void draw(double alpha) {
 
   params.kernel.setArg(0, cl_spheres);
   params.kernel.setArg(1, num_spheres);
-  params.kernel.setArg(2, params.tex);
+  params.kernel.setArg(2, params.objs[0]);
   params.kernel.setArg(3, g_screen->get_window_width());
   params.kernel.setArg(4, g_screen->get_window_height());
 
