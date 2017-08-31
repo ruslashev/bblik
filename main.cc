@@ -10,16 +10,11 @@ struct process_params {
   cl::Program program;
   cl::Kernel kernel;
   cl::ImageGL tex;
-  std::vector<cl::Memory> objs;
 } params;
 cl::Buffer cl_spheres;
-
-struct render_params {
-  shader_program *sp;
-  GLuint vao;
-  GLuint tex;
-  int mat_loc, tex_loc;
-} rparams;
+cl::BufferGL cl_vbo;
+std::vector<cl::Memory> cl_vbos;
+GLuint vbo;
 
 struct Sphere {
   cl_float radius;
@@ -117,67 +112,18 @@ void load() {
   // create opengl stuff
   glClearColor(0.2, 0.2, 0.2, 1.0);
 
-  std::string vertex_shader_source = read_file_to_string("screen.vert")
-    , fragment_shader_source = read_file_to_string("screen.frag");
-  rparams.sp = new shader_program(vertex_shader_source, fragment_shader_source);
-  rparams.sp->use_this_prog();
-  rparams.mat_loc = rparams.sp->bind_uniform("matrix");
-  rparams.tex_loc = rparams.sp->bind_uniform("tex");
-  glUniform1i(rparams.tex_loc, 0);
+  glMatrixMode(GL_PROJECTION);
+  gluOrtho2D(0.0, g_screen->get_window_width(), 0.0, g_screen->get_window_height());
+  glGenBuffers(1, &vbo);
+  glBindBuffer(GL_ARRAY_BUFFER, vbo);
+  unsigned int size = g_screen->get_window_width()
+    * g_screen->get_window_height() * sizeof(cl_float3);
+  glBufferData(GL_ARRAY_BUFFER, size, 0, GL_STREAM_DRAW);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-  glGenTextures(1, &rparams.tex);
-  glBindTexture(GL_TEXTURE_2D, rparams.tex);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  // need to set GL_NEAREST
-  // (not GL_NEAREST_MIPMAP_* which would cause CL_INVALID_GL_OBJECT later)
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8 /*GL_RGBA8*/
-      , g_screen->get_window_width(), g_screen->get_window_height(), 0
-      , GL_RGBA, GL_FLOAT, nullptr);
-
-  array_buffer vbo;
-  const std::vector<float> screen_vertices = {
-    -1.f, -1.f,
-     1.f, -1.f,
-     1.f,  1.f,
-    -1.f,  1.f
-  };
-  vbo.bind();
-  vbo.upload(screen_vertices);
-  array_buffer tbo;
-  const std::vector<float> screen_texcords = {
-    0., 0., // y flipped
-    1., 0.,
-    1., 1.,
-    0., 1.
-  };
-  tbo.bind();
-  tbo.upload(screen_texcords);
-  element_array_buffer ebo;
-  const std::vector<GLushort> elements = { 0, 1, 2, 0, 2, 3 };
-  ebo.bind();
-  ebo.upload(elements);
-  // bind vao and attach vbo, tbo and ebo
-  glGenVertexArrays(1,&rparams.vao);
-  glBindVertexArray(rparams.vao);
-  vbo.bind();
-  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
-  glEnableVertexAttribArray(0);
-  tbo.bind();
-  glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, NULL);
-  glEnableVertexAttribArray(1);
-  ebo.bind();
-  glBindVertexArray(0);
-
-  // create opencl texture reference using opengl texture
-  cl_int err_code;
-  params.tex = cl::ImageGL(params.context, CL_MEM_WRITE_ONLY, GL_TEXTURE_2D, 0
-      , rparams.tex, &err_code);
-  assertf(err_code == CL_SUCCESS, "Failed to create OpenGL texture refrence "
-      "(%d)", err_code);
-  params.objs.push_back(params.tex);
+  // create OpenCL buffer from OpenGL vertex buffer object
+  cl_vbo = cl::BufferGL(params.context, CL_MEM_WRITE_ONLY, vbo);
+  cl_vbos.push_back(cl_vbo);
 }
 
 static void key_event(char key, bool down) {
@@ -197,43 +143,43 @@ static void update(double dt, double t) {
 }
 
 static void draw(double alpha) {
-  glViewport(0, 0, g_screen->get_window_width(), g_screen->get_window_height());
+  // glViewport(0, 0, g_screen->get_window_width(), g_screen->get_window_height());
 
   glFinish();
 
-  params.queue.enqueueWriteBuffer(cl_spheres, CL_FALSE, 0
-      , num_spheres * sizeof(Sphere), cpu_spheres);
-
-  params.queue.enqueueAcquireGLObjects(&params.objs);
-
-  params.kernel.setArg(0, cl_spheres);
-  params.kernel.setArg(1, num_spheres);
-  params.kernel.setArg(2, params.objs[0]);
-  params.kernel.setArg(3, g_screen->get_window_width());
-  params.kernel.setArg(4, g_screen->get_window_height());
-
-  size_t local_work_size = params.kernel.getWorkGroupInfo<
-    CL_KERNEL_WORK_GROUP_SIZE>(params.device)
+  size_t local_work_size =
+    params.kernel.getWorkGroupInfo<CL_KERNEL_WORK_GROUP_SIZE>(params.device)
     , global_work_size = g_screen->get_window_width()
     * g_screen->get_window_height();
   if (global_work_size % local_work_size != 0)
     global_work_size = (global_work_size / local_work_size + 1)
       * local_work_size;
 
+  params.kernel.setArg(0, cl_spheres);
+  params.kernel.setArg(1, num_spheres);
+  params.kernel.setArg(2, cl_vbo);
+  params.kernel.setArg(3, g_screen->get_window_width());
+  params.kernel.setArg(4, g_screen->get_window_height());
+
+  params.queue.enqueueWriteBuffer(cl_spheres, CL_TRUE, 0
+      , num_spheres * sizeof(Sphere), cpu_spheres);
+
+  params.queue.enqueueAcquireGLObjects(&cl_vbos);
   params.queue.enqueueNDRangeKernel(params.kernel, cl::NullRange
       , global_work_size, local_work_size);
-
-  params.queue.enqueueReleaseGLObjects(&params.objs);
+  params.queue.enqueueReleaseGLObjects(&cl_vbos);
   params.queue.finish();
 
-  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-  rparams.sp->use_this_prog();
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, rparams.tex);
-  glUniformMatrix4fv(rparams.mat_loc, 1, GL_FALSE, proj_matrix);
-  glBindVertexArray(rparams.vao);
-  glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
-  glBindVertexArray(0);
+  glClear(GL_COLOR_BUFFER_BIT);
+  glBindBuffer(GL_ARRAY_BUFFER, vbo);
+  glVertexPointer(2, GL_FLOAT, 16, 0); // size (2, 3 or 4), type, stride, pointer
+  glColorPointer(4, GL_UNSIGNED_BYTE, 16, (GLvoid*)8); // size (3 or 4), type, stride, pointer
+
+  glEnableClientState(GL_VERTEX_ARRAY);
+  glEnableClientState(GL_COLOR_ARRAY);
+  glDrawArrays(GL_POINTS, 0, g_screen->get_window_width() * g_screen->get_window_height());
+  glDisableClientState(GL_COLOR_ARRAY);
+  glDisableClientState(GL_VERTEX_ARRAY);
 }
 
 static void cleanup() {

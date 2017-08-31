@@ -1,5 +1,5 @@
 all:
-	g++ main.cc screen.cc ogl.cc -lOpenCL -lSDL2 -lGLEW -lGLX -lGL -o bblik
+	g++ main.cc screen.cc ogl.cc -lOpenCL -lSDL2 -lGLEW -lGLX -lGL -lGLU -o bblik
 	./bblik
 
 smallpt:

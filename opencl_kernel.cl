@@ -192,8 +192,10 @@ float4 linear_to_srgb_clamp4(float3 c) {
       , linear_to_srgb_clamp(c.z), 1.f);
 }
 
+union color { float c; uchar4 components; };
+
 __kernel void render_kernel(__constant Sphere *spheres, const int num_spheres,
-    write_only image2d_t out, const int width, const int height) {
+    __global float3 *output, const int width, const int height) {
   // the unique global id of the work item for the current pixel
   unsigned int work_item_id = get_global_id(0);
 
@@ -214,6 +216,13 @@ __kernel void render_kernel(__constant Sphere *spheres, const int num_spheres,
   for (int i = 0; i < SAMPLES; i++)
     finalcolor += trace(spheres, &camray, num_spheres, &rng_state) * inv_samples;
 
-  write_imagef(out, (int2)(x_coord, y_coord), linear_to_srgb_clamp4(finalcolor));
+  float4 finalcolor4 = linear_to_srgb_clamp4(finalcolor);
+
+  union color finalcolor1;
+  finalcolor1.components = (uchar4)((unsigned char)(finalcolor4.x * 255),
+      (unsigned char)(finalcolor4.y * 255), (unsigned char)(finalcolor4.z * 255)
+      , 1);
+
+  output[work_item_id] = (float3)(x_coord, y_coord, finalcolor1.c);
 }
 
