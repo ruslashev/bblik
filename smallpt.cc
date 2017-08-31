@@ -36,7 +36,7 @@ sphere_t spheres[] = {
   sphere_t(1e5,  vec3_t(50, 1e5, 81.6),         vec3_t(), vec3_t(.75,.75,.75),  DIFF),//Botm
   sphere_t(1e5,  vec3_t(50,-1e5 + 81.6, 81.6),  vec3_t(), vec3_t(.75,.75,.75),  DIFF),//Top
   sphere_t(16.5, vec3_t(27, 16.5, 47),          vec3_t(), vec3_t(1, 1, 1) * .999, SPEC),//Mirr
-  sphere_t(16.5, vec3_t(73, 16.5, 78),          vec3_t(), vec3_t(1, 1, 1) * .999, REFR),//Glas
+  sphere_t(16.5, vec3_t(73, 16.5, 78),          vec3_t(), vec3_t(1, 1, 1) * .999, DIFF),//Glas
   sphere_t(600,  vec3_t(50, 681.6 - .27, 81.6), vec3_t(12, 12, 12),  vec3_t(),  DIFF) //Lite
 };
 const int num_spheres = sizeof(spheres) / sizeof(sphere_t);
@@ -78,48 +78,79 @@ double randf() {
   return drand48();
 }
 
-vec3_t radiance(const ray_t &r, int depth) {
-  double t; // distance to intersection
-  int id = 0; // id of intersected object
-  if (!intersect(r, t, id))
-    return vec3_t(); // return black on miss
+vec3_t radiance(ray_t r) {
+  vec3_t accum = vec3_t(0, 0, 0), mask = vec3_t(1, 1, 1);
+  for (int i = 0; i < 8; ++i) {
+    double t;
+    int id = 0;
+    if (!intersect(r, t, id))
+      return accum;
 
-  const sphere_t &obj = spheres[id]; // the hit object
-  vec3_t x = r.o + r.d * t,
-         n = glm::normalize(x - obj.pos),
-         nl = glm::dot(n, r.d) < 0 ? n : -n, f = obj.color;
-  double p = std::max(f.x, std::max(f.y, f.z));
+    const sphere_t &obj = spheres[id]; // the hit object
+    vec3_t x = r.o + r.d * t,
+           n = glm::normalize(x - obj.pos),
+           nl = glm::dot(n, r.d) < 0 ? n : -n, f = obj.color;
+    double p = std::max(f.x, std::max(f.y, f.z));
 
-  // R.R.
-  if (++depth > 5)
-    if (randf() < p)
-      f = f * (1. / p);
-    else
-      return obj.emission;
+#if 0
+    if (bounces > 5)
+      if (randf() < p)
+        f = f * (1. / p);
+      else
+        return obj.emission;
+#endif
 
-  if (obj.refl == DIFF) { // Ideal DIFFUSE reflection
-    double r1 = 2 * M_PI * randf(), r2 = randf(), r2s = sqrt(r2);
-    vec3_t w = nl
-      , u = glm::normalize(glm::cross(fabs(w.x) > 0.1 ? vec3_t(0, 1, 0) : vec3_t(1, 0, 0), w))
-      , v = glm::cross(w,u);
-    vec3_t d = glm::normalize(u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrt(1. - r2));
-    return obj.emission + f * radiance(ray_t(x, d), depth);
-  } else if (obj.refl == SPEC) // Ideal SPECULAR reflection
-    return obj.emission + f * radiance(ray_t(x, r.d - n * 2. * glm::dot(n, r.d)), depth);
-  else if (obj.refl == REFR) { // Ideal dielectric REFRACTION
-    ray_t refl_ray(x, r.d - n * 2. * glm::dot(n, r.d));
-    bool into = glm::dot(n, nl) > 0; // Ray from outside going in?
-    double nc = 1, nt = 1.5, nnt = into ? nc / nt : nt / nc, ddn = glm::dot(r.d, nl), cos2t;
-    if ((cos2t = 1 - nnt * nnt * (1 - ddn * ddn)) < 0) // Total internal reflection
-      return obj.emission + f * radiance(refl_ray, depth);
-    vec3_t tdir = glm::normalize(r.d * nnt - n * ((into ? 1 : -1) * (ddn * nnt + sqrt(cos2t))));
-    double a = nt - nc, b = nt + nc, R0 = a * a / (b * b), c = 1 - (into ? - ddn : glm::dot(tdir, n));
-    double Re = R0 + (1 - R0) * c * c * c * c * c, Tr = 1 - Re
-      , P = 0.25 + 0.5 * Re, RP = Re / P, TP = Tr / (1 - P);
-    return obj.emission + f * (depth > 2 ? (randf() < P ? // Russian roulette
-          radiance(refl_ray, depth) * RP : radiance(ray_t(x, tdir), depth) * TP) :
-        radiance(refl_ray, depth) * Re + radiance(ray_t(x, tdir), depth) * Tr);
+    if (obj.refl == DIFF) {
+      double r1 = 2 * M_PI * randf(), r2 = randf(), r2s = sqrt(r2);
+      vec3_t w = nl
+        , u = glm::normalize(glm::cross(fabs(w.x) > 0.1 ? vec3_t(0, 1, 0) : vec3_t(1, 0, 0), w))
+        , v = glm::cross(w,u)
+        , d = glm::normalize(u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrt(1. - r2));
+      r.o = x;
+      r.d = d;
+      accum = accum + obj.emission * mask;
+      mask = mask * obj.color;
+      // mask = mask * glm::dot(d, nl); // cosine-weighted importance sampling for diffuse surfaces
+    } else if (obj.refl == SPEC) {
+      r.o = x;
+      r.d = r.d - n * 2. * glm::dot(n, r.d);
+      accum = accum + obj.emission * mask;
+      mask = mask * obj.color;
+    } else if (obj.refl == REFR) {
+      bool into = glm::dot(n, nl) > 0; // Ray from outside going in?
+      double nc = 1, nt = 1.5, nnt = into ? nc / nt : nt / nc, ddn = glm::dot(r.d, nl), cos2t;
+      if ((cos2t = 1 - nnt * nnt * (1 - ddn * ddn)) < 0) {
+        // Total internal reflection
+        r.o = x;
+        r.d = r.d - n * 2. * glm::dot(n, r.d);
+        accum = accum + obj.emission * mask;
+        mask = mask * obj.color;
+      } else {
+        vec3_t tdir = glm::normalize(r.d * nnt - n * ((into ? 1 : -1) * (ddn
+                * nnt + sqrt(cos2t))));
+        double a = nt - nc, b = nt + nc, R0 = a * a / (b * b)
+          , c = 1 - (into ? - ddn : glm::dot(tdir, n))
+          , Re = R0 + (1 - R0) * c * c * c * c * c, Tr = 1 - Re
+          , P = 0.25 + 0.5 * Re, RP = Re / P, TP = Tr / (1 - P);
+        if (i > 2) { // R.R.
+          if (randf() < P) {
+            accum = accum + obj.emission * mask * RP;
+            r.o = x;
+            r.d = r.d - n * 2. * glm::dot(n, r.d);
+            mask = mask * obj.color;
+          } else {
+            accum = accum + obj.emission * mask * TP;
+            r.o = x;
+            r.d = tdir;
+            mask = mask * obj.color;
+          }
+        } else {
+          // radiance(refl_ray, depth) * Re + radiance(ray_t(x, tdir), depth) * Tr
+        }
+      }
+    }
   }
+  return accum;
 }
 
 int main(int argc, char *argv[]) {
@@ -139,7 +170,7 @@ int main(int argc, char *argv[]) {
         double r2 = 2. * randf(), dy = r2 < 1. ? sqrt(r2) - 1. : 1. - sqrt(2. - r2);
         vec3_t d = cx * (((1. + dx) / 2. + x) / w - 0.5)
           + cy * (((1. + dy) / 2. + y) / h - 0.5) + cam.d;
-        r += radiance(ray_t(cam.o + d, glm::normalize(d)), 0) * (1. / samples);
+        r += radiance(ray_t(cam.o + d, glm::normalize(d))) * (1. / samples);
       } // Camera rays are pushed ^^^^^ forward to start in interior
       c[i] = vec3_t(clamp(r.x), clamp(r.y), clamp(r.z));
     }
