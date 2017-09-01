@@ -1,6 +1,5 @@
 __constant float EPSILON = 0.00003f;
 __constant float PI = 3.14159265358979323846f;
-__constant int SAMPLES = 10;
 __constant float inf = 1e20f;
 
 typedef struct {
@@ -103,14 +102,14 @@ bool intersect_scene(__constant Sphere *spheres, const Ray *ray, float *t
 // the hitpoint)
 // small optimisation: diffuse ray directions are calculated using cosine
 // weighted importance sampling
-float3 trace(__constant Sphere *spheres, const Ray *camray
-    , const int num_spheres, uint *rng_state) {
+float3 trace(const int bounces, __constant Sphere *spheres
+    , const int num_spheres, const Ray *camray, uint *rng_state) {
   Ray ray = *camray;
 
   float3 accum_color = (float3)(0.f, 0.f, 0.f);
   float3 mask = (float3)(1.f, 1.f, 1.f);
 
-  for (int bounces = 0; bounces < 8; bounces++) {
+  for (int bounce = 0; bounce < bounces; bounce++) {
     float t; // distance to intersection
     int hitsphere_id = 0; // index of intersected sphere
 
@@ -163,7 +162,7 @@ float3 trace(__constant Sphere *spheres, const Ray *camray
 
 #if 0
     // R.R.
-    if (bounces > 3) {
+    if (bounce > 3) {
       float p = max(mask.x, max(mask.y, mask.z));
       if (random(rng_state) > p)
         break;
@@ -192,8 +191,9 @@ float4 linear_to_srgb_clamp4(float3 c) {
       , linear_to_srgb_clamp(c.z), 1.f);
 }
 
-__kernel void render_kernel(__constant Sphere *spheres, const int num_spheres,
-    write_only image2d_t out, const int width, const int height) {
+__kernel void render_kernel(const int samples, const int bounces
+    , __constant Sphere *spheres, const int num_spheres
+    , write_only image2d_t out, const int width, const int height) {
   // the unique global id of the work item for the current pixel
   unsigned int work_item_id = get_global_id(0);
 
@@ -209,10 +209,9 @@ __kernel void render_kernel(__constant Sphere *spheres, const int num_spheres,
 
   // add the light contribution of each sample and average over all samples
   float3 finalcolor = (float3)(0.f, 0.f, 0.f);
-  float inv_samples = 1.f / SAMPLES;
-
-  for (int i = 0; i < SAMPLES; i++)
-    finalcolor += trace(spheres, &camray, num_spheres, &rng_state) * inv_samples;
+  float inv_samples = 1.f / samples;
+  for (int i = 0; i < samples; i++)
+    finalcolor += trace(bounces, spheres, num_spheres, &camray, &rng_state) * inv_samples;
 
   write_imagef(out, (int2)(x_coord, y_coord), linear_to_srgb_clamp4(finalcolor));
 }

@@ -61,6 +61,8 @@ static const float proj_matrix[16] = {
 
 screen *g_screen = new screen("bblik", 800, 600);
 
+int samples = 10, bounces = 8;
+
 void check_clgl_interop_availiability(const cl::Device &device) {
 #if defined (__APPLE__) || defined(MACOSX)
   std::string cl_gl_sharing_ext_name = "cl_APPLE_gl_sharing";
@@ -181,6 +183,18 @@ void load() {
 }
 
 static void key_event(char key, bool down) {
+  if (down) {
+    if (key == 'q')
+      ++samples;
+    if (key == 'a')
+      if (samples)
+        --samples;
+    if (key == 'w')
+      ++bounces;
+    if (key == 's')
+      if (bounces)
+        --bounces;
+  }
 }
 
 static void mouse_motion_event(float xrel, float yrel, int x, int y) {
@@ -194,6 +208,8 @@ static void update(double dt, double t) {
   cpu_spheres[6].position.s[0] = -0.25f + cos((t * 10.f) / 5.f) / 8.f;
   cpu_spheres[6].position.s[1] = sin((t * 10.f) / 11.f) / 10.f;
   cpu_spheres[6].position.s[2] = -0.1f + cos((t * 10.f) / 7.f) / 6.f;
+
+  printf("\rsamples=%3d, bounces=%3d ", samples, bounces);
 }
 
 static void draw(double alpha) {
@@ -206,11 +222,13 @@ static void draw(double alpha) {
 
   params.queue.enqueueAcquireGLObjects(&params.objs);
 
-  params.kernel.setArg(0, cl_spheres);
-  params.kernel.setArg(1, num_spheres);
-  params.kernel.setArg(2, params.objs[0]);
-  params.kernel.setArg(3, g_screen->get_window_width());
-  params.kernel.setArg(4, g_screen->get_window_height());
+  params.kernel.setArg(0, samples);
+  params.kernel.setArg(1, bounces);
+  params.kernel.setArg(2, cl_spheres);
+  params.kernel.setArg(3, num_spheres);
+  params.kernel.setArg(4, params.objs[0]);
+  params.kernel.setArg(5, g_screen->get_window_width());
+  params.kernel.setArg(6, g_screen->get_window_height());
 
   size_t local_work_size = params.kernel.getWorkGroupInfo<
     CL_KERNEL_WORK_GROUP_SIZE>(params.device)
@@ -237,6 +255,7 @@ static void draw(double alpha) {
 }
 
 static void cleanup() {
+  puts("");
 }
 
 int main() {
